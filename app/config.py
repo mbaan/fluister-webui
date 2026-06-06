@@ -82,7 +82,7 @@ def load_settings() -> Settings:
         max_upload_mb=int(os.environ.get("TRANSCRIBE_MAX_UPLOAD_MB", "2048")),
         diarize=_env_bool("TRANSCRIBE_DIARIZE", True),
         diarize_model=os.environ.get(
-            "TRANSCRIBE_DIARIZE_MODEL", "pyannote/speaker-diarization-3.1"
+            "TRANSCRIBE_DIARIZE_MODEL", "pyannote/speaker-diarization-community-1"
         ),
         speaker_threshold=float(os.environ.get("TRANSCRIBE_SPEAKER_THRESHOLD", "0.45")),
         hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),

@@ -14,6 +14,10 @@ Nothing leaves your machine.
   anything `ffmpeg` can read; auto-converted to 16 kHz mono.
 - **Filename timestamps** — deduces when a message was sent from its filename
   (Signal / WhatsApp / Telegram patterns), falling back to the file date.
+- **Speaker recognition** — optional [pyannote](https://github.com/pyannote/pyannote-audio)
+  diarization labels who spoke when, and a **global voice gallery** recognizes
+  the same person across files. Rename/merge people on the Speakers page; labels
+  show as colored chips and in the outputs.
 - **Output formats** — TXT, SRT, VTT, JSON.
 - **Fast** — batched GPU inference (`large-v3`, float16) with automatic
   CUDA-OOM and CPU fallbacks.
@@ -35,6 +39,19 @@ uv sync
 
 The first transcription downloads the `large-v3` model (~3 GB) to your Hugging
 Face cache; it's reused afterwards.
+
+### Optional: speaker recognition
+
+Diarization uses gated pyannote models, so it needs a (free) HuggingFace token:
+
+1. Accept the terms at
+   <https://huggingface.co/pyannote/speaker-diarization-community-1>.
+2. Create a read token at <https://huggingface.co/settings/tokens>.
+3. `cp .env.example .env` and set `HF_TOKEN=hf_...` (`.env` is gitignored).
+
+Without a token, transcription still works — only speaker labels are disabled.
+To add speakers to files transcribed earlier, use **Re-diarize**
+(`POST /api/jobs/{id}/rediarize`).
 
 ## Run
 
@@ -61,6 +78,10 @@ All optional, via environment variables:
 | `TRANSCRIBE_VAD` | `true` | Silero voice-activity filtering |
 | `TRANSCRIBE_HOST` / `TRANSCRIBE_PORT` | `127.0.0.1` / `8000` | bind address |
 | `TRANSCRIBE_DATA_DIR` | `./data` | uploads, outputs, SQLite db |
+| `HF_TOKEN` | — | HuggingFace token; enables speaker diarization |
+| `TRANSCRIBE_DIARIZE` | `true` | run diarization when a token is present |
+| `TRANSCRIBE_DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | pyannote pipeline |
+| `TRANSCRIBE_SPEAKER_THRESHOLD` | `0.45` | cosine similarity to match a known voice |
 
 ## Tests
 
@@ -73,12 +94,18 @@ RUN_SLOW_TESTS=1 uv run pytest # also runs an end-to-end tiny-model test
 
 ```
 upload → SQLite job (queued) → single GPU worker:
-   ffmpeg → 16 kHz mono wav → faster-whisper (batched) → txt/srt/vtt/json
-                                   │
-        live segments ── SSE ──────┘→ browser
+   ffmpeg → 16 kHz mono wav → faster-whisper (words) ─┐
+                                   │                   ├→ assign speakers
+        live segments ── SSE ──────┘→ browser          │   → identify vs gallery
+                          pyannote diarize ────────────┘   → txt/srt/vtt/json
 ```
 
 A single background worker processes one job at a time (the GPU is the
-bottleneck); additional uploads queue up. Modules: `transcriber` (engine),
-`audio` (ffmpeg), `formats` (writers), `filename_time` (timestamp parser),
-`queue` (worker + SSE), `db` (SQLite), `main` (FastAPI + static UI).
+bottleneck); additional uploads queue up. After transcription, an optional
+pyannote pass diarizes the audio, words are aligned to speaker turns, and each
+turn's voice embedding is matched against the **global person gallery** (assign
+to the closest match above the threshold, else create a new person). Modules:
+`transcriber` (engine), `diarizer` (pyannote), `assign` (word↔speaker),
+`speakers` (voice gallery), `audio` (ffmpeg), `formats` (writers),
+`filename_time` (timestamp parser), `queue` (worker + SSE), `db` (SQLite),
+`main` (FastAPI + static UI).

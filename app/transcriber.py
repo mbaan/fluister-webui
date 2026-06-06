@@ -102,7 +102,9 @@ class Transcriber:
             for w in getattr(raw, "words", None) or []:
                 if w.start is None or w.end is None:
                     continue
-                words.append(Word(start=w.start, end=w.end, word=w.word))
+                # faster-whisper word tokens carry a leading space; strip it so
+                # assign.py can re-join speaker turns with single spaces.
+                words.append(Word(start=w.start, end=w.end, word=(w.word or "").strip()))
 
         return segments, words
 

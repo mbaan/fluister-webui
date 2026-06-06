@@ -122,8 +122,14 @@ class Gallery:
         job_id: str | None = None,
     ) -> None:
         """Store the embedding row, then recompute the person's centroid as the
-        mean of ALL its embeddings. Updates centroid (bytes), n_samples, dim."""
+        mean of ALL its embeddings. Updates centroid (bytes), n_samples, dim.
+
+        A given job contributes at most one sample per person: re-adding for the
+        same (person, job) replaces the previous sample rather than appending,
+        so re-diarizing a file doesn't inflate the gallery."""
         emb = np.asarray(embedding, dtype=np.float32)
+        if job_id is not None:
+            db.delete_job_embeddings(self.db_path, person_id, job_id)
         db.add_person_embedding(
             self.db_path,
             {

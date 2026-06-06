@@ -250,3 +250,13 @@ def reassign_embeddings(db_path: Path, src_person_id: str, dst_person_id: str) -
             "UPDATE person_embeddings SET person_id = ? WHERE person_id = ?",
             (dst_person_id, src_person_id),
         )
+
+
+def delete_job_embeddings(db_path: Path, person_id: str, job_id: str) -> None:
+    """Drop a (person, job) voice sample so re-diarizing a job replaces rather
+    than appends its contribution."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM person_embeddings WHERE person_id = ? AND job_id = ?",
+            (person_id, job_id),
+        )

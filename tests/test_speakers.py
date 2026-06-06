@@ -185,3 +185,26 @@ def test_list_has_no_blob_keys(tmp_path):
         assert "name" in p
         assert "n_samples" in p
         assert "created_at" in p
+
+
+def test_add_sample_idempotent_per_job(tmp_path):
+    """Re-adding a sample for the same (person, job) replaces, not appends."""
+    import numpy as np
+
+    from app import db
+    from app.speakers import Gallery
+
+    dbp = tmp_path / "t.db"
+    db.init_db(dbp)
+    g = Gallery(dbp)
+
+    pid, created = g.assign_or_create(np.array([1, 0, 0], dtype="float32"), job_id="A")
+    assert created and g.list()[0]["n_samples"] == 1
+
+    # same job again -> still one sample
+    g.add_sample(pid, np.array([1, 0, 0], dtype="float32"), job_id="A")
+    assert g.list()[0]["n_samples"] == 1
+
+    # a different job -> two samples
+    g.add_sample(pid, np.array([1, 0, 0], dtype="float32"), job_id="B")
+    assert g.list()[0]["n_samples"] == 2

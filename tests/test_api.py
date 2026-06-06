@@ -201,6 +201,32 @@ async def test_persons_keywords_via_api(patched):
             await client.delete(f"/api/persons/{pid}")
 
 
+async def test_delete_job_forgets_gallery_samples(patched):
+    import numpy as np
+
+    from app import db as _db
+    from app.main import settings as app_settings
+    from app.speakers import Gallery
+
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            files = [("files", ("forget.m4a", b"q", "audio/mp4"))]
+            jid = (await client.post("/api/jobs", files=files)).json()["created"][0]["id"]
+            await _wait_done(client, jid)
+
+            # A voice sample attributed to this job.
+            g = Gallery(app_settings.db_path)
+            pid, _ = g.assign_or_create(np.array([1, 0, 0], dtype="float32"), job_id=jid)
+            assert len(_db.list_person_embeddings(app_settings.db_path, pid)) == 1
+
+            # Deleting the job forgets its sample and empties the centroid.
+            assert (await client.delete(f"/api/jobs/{jid}")).status_code == 200
+            assert _db.list_person_embeddings(app_settings.db_path, pid) == []
+            assert _db.get_person(app_settings.db_path, pid)["centroid"] is None
+
+            await client.delete(f"/api/persons/{pid}")  # cleanup
+
+
 async def test_duplicate_skipped(patched):
     async with app.router.lifespan_context(app):
         async with await _client() as client:

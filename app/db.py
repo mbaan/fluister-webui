@@ -305,3 +305,19 @@ def delete_job_embeddings(db_path: Path, person_id: str, job_id: str) -> None:
             "DELETE FROM person_embeddings WHERE person_id = ? AND job_id = ?",
             (person_id, job_id),
         )
+
+
+def persons_with_embeddings_for_job(db_path: Path, job_id: str) -> list[str]:
+    """Person ids that have at least one voice sample from ``job_id``."""
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT DISTINCT person_id FROM person_embeddings WHERE job_id = ?",
+            (job_id,),
+        )
+        return [r["person_id"] for r in cur.fetchall()]
+
+
+def delete_embeddings_for_job(db_path: Path, job_id: str) -> None:
+    """Drop every voice sample contributed by ``job_id`` (across all persons)."""
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM person_embeddings WHERE job_id = ?", (job_id,))

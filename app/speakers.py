@@ -178,6 +178,19 @@ class Gallery:
         )
         self._recompute_centroid(person_id)
 
+    def forget_job(self, job_id: str) -> None:
+        """Remove a job's contribution from the gallery: delete every voice
+        sample it produced and recompute the centroids of the persons affected.
+
+        Called when a job is deleted so that deleting (and re-uploading) a clip
+        doesn't leave orphaned/duplicate samples behind that skew identity."""
+        affected = db.persons_with_embeddings_for_job(self.db_path, job_id)
+        if not affected:
+            return
+        db.delete_embeddings_for_job(self.db_path, job_id)
+        for person_id in affected:
+            self._recompute_centroid(person_id)
+
     def rename(self, person_id: str, name: str) -> None:
         db.update_person(self.db_path, person_id, name=name)
 

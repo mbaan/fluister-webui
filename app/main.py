@@ -292,6 +292,9 @@ async def job_audio(job_id: str):
 
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str):
+    # Forget this job's voice samples first so deleting (and re-uploading) a clip
+    # doesn't leave orphaned/duplicate samples skewing the gallery centroids.
+    Gallery(settings.db_path).forget_job(job_id)
     job = db.delete_job(settings.db_path, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")

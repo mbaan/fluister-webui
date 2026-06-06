@@ -187,6 +187,43 @@ def test_list_has_no_blob_keys(tmp_path):
         assert "created_at" in p
 
 
+def test_forget_job_drops_samples_and_recomputes_centroid(tmp_path):
+    """Deleting a job must remove its voice samples and re-mean the centroid,
+    so deleted/re-uploaded clips don't accumulate or skew identity."""
+    g = Gallery(make_db(tmp_path), threshold=0.45)
+    a = unit(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    b = unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    pid, _ = g.assign_or_create(a, job_id="jobA")
+    g.add_sample(pid, b, job_id="jobB")
+    assert g.list()[0]["n_samples"] == 2
+
+    g.forget_job("jobA")
+
+    assert g.list()[0]["n_samples"] == 1  # only jobB's sample remains
+    rows = db.list_person_embeddings(g.db_path, pid)
+    assert [r["job_id"] for r in rows] == ["jobB"]
+    # centroid is now exactly jobB's vector, not the old mean of a+b
+    centroid = np.frombuffer(db.get_person(g.db_path, pid)["centroid"], dtype=np.float32)
+    assert cosine(centroid, b) > 0.999
+    assert cosine(centroid, a) < 0.5
+
+
+def test_forget_job_recomputes_only_affected_persons(tmp_path):
+    """A person with no samples from the forgotten job is left untouched."""
+    g = Gallery(make_db(tmp_path), threshold=0.45)
+    a = unit(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    b = unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    pid_a, _ = g.assign_or_create(a, job_id="jobA")
+    pid_b, _ = g.assign_or_create(b, job_id="jobB")
+
+    g.forget_job("jobA")
+
+    # pid_a is emptied (row kept, 0 samples); pid_b is untouched.
+    assert {p["id"]: p["n_samples"] for p in g.list()} == {pid_a: 0, pid_b: 1}
+    assert db.get_person(g.db_path, pid_b)["centroid"] is not None
+    assert db.get_person(g.db_path, pid_a)["centroid"] is None
+
+
 def test_add_sample_idempotent_per_job(tmp_path):
     """Re-adding a sample for the same (person, job) replaces, not appends."""
     import numpy as np

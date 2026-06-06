@@ -722,6 +722,9 @@ select:focus-visible { border-color: var(--accent); outline: none; }
   background-position: right 9px center;
 }
 
+#clearAll { margin-left: auto; align-self: center; }
+.btn--sm { padding: 5px 10px; font-size: 12px; }
+
 .card__meta .chip {
   font-size: 10.5px;
   font-weight: 560;

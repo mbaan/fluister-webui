@@ -183,6 +183,13 @@ def find_duplicate(
     return dict(row) if row else None
 
 
+def clear_jobs(db_path: Path) -> int:
+    """Delete every job row (persons / voice gallery are left intact).
+    Returns the number of jobs removed."""
+    with _connect(db_path) as conn:
+        return conn.execute("DELETE FROM jobs").rowcount
+
+
 def mark_interrupted(db_path: Path) -> list[str]:
     """Flag any jobs still 'in flight' from a previous run as interrupted.
     Returns the affected job ids."""

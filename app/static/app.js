@@ -53,6 +53,7 @@
   const speakersEmpty = $("#speakersEmpty");
   const speakersCount = $("#speakersCount");
   const speakerFilter = $("#speakerFilter");
+  const clearAllBtn = $("#clearAll");
 
   // ── Small helpers ────────────────────────────────────────────────────
   function el(tag, attrs, children) {
@@ -243,6 +244,7 @@
     });
 
     populateSpeakerFilter(all);
+    if (clearAllBtn) clearAllBtn.hidden = all.length === 0;
     const shown = speakerFilterValue
       ? all.filter((j) => jobSpeakers(j).some((s) => s.name === speakerFilterValue))
       : all;
@@ -826,6 +828,33 @@
     }
   }
 
+  async function clearAllJobs() {
+    if (jobs.size === 0) return;
+    const ok = await confirmModal({
+      title: "Clear all transcriptions",
+      message: "Delete all transcriptions and their files? Your speakers (voice profiles) are kept.",
+      confirmLabel: "Clear all",
+    });
+    if (!ok) return;
+    try {
+      const res = await fetch(`${API}/clear`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      for (const id of Array.from(ui.keys())) {
+        const u = ui.get(id);
+        if (u && u.streaming) stopStream(id);
+      }
+      jobs.clear();
+      ui.clear();
+      jobJson.clear();
+      jobJsonPending.clear();
+      speakerFilterValue = "";
+      clearBanner();
+      render();
+    } catch (err) {
+      showBanner("Couldn't clear transcriptions.");
+    }
+  }
+
   // ── SSE streaming ────────────────────────────────────────────────────
   function startStream(id) {
     const u = uiFor(id);
@@ -1325,6 +1354,7 @@
         render();
       });
     }
+    if (clearAllBtn) clearAllBtn.addEventListener("click", clearAllJobs);
     poll();
     setInterval(poll, POLL_MS);
     // Tidy up streams on unload.

@@ -193,3 +193,27 @@ async def test_duplicate_skipped(patched):
             files3 = [("files", ("dup.m4a", content + b"x", "audio/mp4"))]
             third = (await client.post("/api/jobs", files=files3)).json()
             assert len(third["created"]) == 1 and third["duplicates"] == []
+
+
+async def test_clear_all_keeps_persons(patched):
+    import numpy as np
+
+    from app.main import settings as app_settings
+    from app.speakers import Gallery
+
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            files = [("files", ("clearme.m4a", b"abc", "audio/mp4"))]
+            jid = (await client.post("/api/jobs", files=files)).json()["created"][0]["id"]
+            await _wait_done(client, jid)
+            Gallery(app_settings.db_path).assign_or_create(np.array([1, 0, 0], dtype="float32"))
+
+            r = await client.post("/api/jobs/clear")
+            assert r.status_code == 200 and r.json()["deleted"] >= 1
+            assert (await client.get("/api/jobs")).json() == []
+
+            # persons (voice gallery) are kept
+            persons = (await client.get("/api/persons")).json()
+            assert len(persons) >= 1
+            for p in persons:  # cleanup for other tests
+                await client.delete(f"/api/persons/{p['id']}")

@@ -140,6 +140,19 @@ async def create_jobs(
     return {"created": created, "duplicates": duplicates}
 
 
+@app.post("/api/jobs/clear")
+async def clear_all_jobs():
+    """Delete all transcriptions and their files. Keeps persons (voice gallery)."""
+    for d in (settings.uploads_dir, settings.outputs_dir):
+        for p in d.glob("*"):
+            if p.is_file():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+    return {"deleted": db.clear_jobs(settings.db_path)}
+
+
 @app.get("/api/jobs")
 async def list_jobs():
     return db.list_jobs(settings.db_path)

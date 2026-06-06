@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS persons (
     created_at TEXT NOT NULL,
     centroid   BLOB,
     n_samples  INTEGER NOT NULL DEFAULT 0,
-    dim        INTEGER
+    dim        INTEGER,
+    keywords   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS person_embeddings (
@@ -90,6 +91,10 @@ def init_db(db_path: Path) -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced after a database was first created."""
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(persons)").fetchall()}
+    if "keywords" not in pcols:
+        conn.execute("ALTER TABLE persons ADD COLUMN keywords TEXT")
+
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "diarized" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN diarized INTEGER NOT NULL DEFAULT 0")
@@ -211,7 +216,7 @@ def mark_interrupted(db_path: Path) -> list[str]:
 
 
 # ── persons / global voice gallery ──────────────────────────────────────────
-_PERSON_COLS = ["id", "name", "created_at", "centroid", "n_samples", "dim"]
+_PERSON_COLS = ["id", "name", "created_at", "centroid", "n_samples", "dim", "keywords"]
 
 
 def create_person(db_path: Path, person: dict[str, Any]) -> dict[str, Any]:

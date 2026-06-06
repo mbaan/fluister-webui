@@ -25,7 +25,7 @@ class FakeTranscriber:
     device = "cpu"
     compute_type = "int8"
 
-    def transcribe(self, wav_path, duration, language=None, on_segment=None):
+    def transcribe(self, wav_path, duration, language=None, on_segment=None, hotwords=None):
         lang = "nl" if language == "nl" else "en"
         segs = [
             Segment(0.0, 1.5, "Hallo daar." if lang == "nl" else "Hello there."),
@@ -141,7 +141,7 @@ async def test_persons_api(patched):
             ids = {p["id"] for p in listed}
             assert {id1, id2} <= ids
             # response carries no raw embedding blobs
-            assert set(listed[0].keys()) == {"id", "name", "n_samples", "created_at"}
+            assert set(listed[0].keys()) == {"id", "name", "n_samples", "created_at", "keywords"}
 
             # rename
             r = await client.put(f"/api/persons/{id1}", json={"name": "Marco"})
@@ -165,6 +165,40 @@ async def test_persons_api(patched):
             assert (
                 await client.put("/api/persons/nope", json={"name": "x"})
             ).status_code == 404
+
+
+async def test_persons_keywords_via_api(patched):
+    import numpy as np
+
+    from app.main import settings as app_settings
+    from app.speakers import Gallery
+
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            pid, _ = Gallery(app_settings.db_path).assign_or_create(
+                np.array([1, 0, 0], dtype="float32")
+            )
+
+            # public shape now includes keywords (default null)
+            me = next(p for p in (await client.get("/api/persons")).json() if p["id"] == pid)
+            assert "keywords" in me and me["keywords"] is None
+
+            # set keywords via PUT
+            r = await client.put(f"/api/persons/{pid}", json={"keywords": "Xenos, Praxis"})
+            assert r.status_code == 200 and r.json()["keywords"] == "Xenos, Praxis"
+
+            # name + keywords together
+            r = await client.put(
+                f"/api/persons/{pid}", json={"name": "Jolis", "keywords": "Gouda"}
+            )
+            assert r.status_code == 200
+            assert r.json()["name"] == "Jolis" and r.json()["keywords"] == "Gouda"
+
+            # updating only the name leaves keywords intact
+            r = await client.put(f"/api/persons/{pid}", json={"name": "Jolis2"})
+            assert r.status_code == 200 and r.json()["keywords"] == "Gouda"
+
+            await client.delete(f"/api/persons/{pid}")
 
 
 async def test_duplicate_skipped(patched):

@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from app import assign, audio, db
 from app.config import Settings
-from app.speakers import Gallery
+from app.speakers import Gallery, build_hotwords
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +190,12 @@ class JobQueue:
                 db.update_job(db_path, job_id, progress=progress)
 
             language = job.get("language") or "auto"
+            # Bias the decoder toward known names/keywords (union across the
+            # whole gallery — we don't know the speaker until diarization runs).
+            hotwords = build_hotwords(db.list_persons(db_path))
             segments, words, info = await asyncio.to_thread(
-                self.transcriber.transcribe, wav_path, duration, language, on_segment
+                self.transcriber.transcribe,
+                wav_path, duration, language, on_segment, hotwords,
             )
 
             # 2b. Diarize + identify speakers (best-effort; never fails the job).

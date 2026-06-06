@@ -6,12 +6,49 @@ similarity. A new person is created when no existing person is close enough.
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
 import numpy as np
 
 from app import db
+
+# Auto-assigned gallery names like "Person 3" carry no signal — exclude them so
+# they don't pollute the hotword bias.
+_PLACEHOLDER_NAME = re.compile(r"^Person \d+$")
+
+
+def build_hotwords(persons: list[dict]) -> str | None:
+    """Union of all persons' names + keyword lists, for faster-whisper ``hotwords``.
+
+    Each person contributes their display name (unless it's a ``Person N``
+    placeholder) plus every term in their ``keywords`` field (split on commas and
+    newlines). Terms are de-duplicated case-insensitively, preserving first-seen
+    order and casing, and joined with ``", "``. Returns ``None`` when nothing
+    qualifies, so callers pass no bias rather than an empty string.
+    """
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(term: str) -> None:
+        t = term.strip()
+        if not t:
+            return
+        key = t.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(t)
+
+    for p in persons:
+        name = (p.get("name") or "").strip()
+        if name and not _PLACEHOLDER_NAME.match(name):
+            add(name)
+        for raw in re.split(r"[,\n]", p.get("keywords") or ""):
+            add(raw)
+
+    return ", ".join(terms) if terms else None
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:

@@ -30,8 +30,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 LANGUAGES = {"auto", "nl", "en"}
 
 
-class RenameBody(BaseModel):
-    name: str
+class PersonUpdateBody(BaseModel):
+    name: str | None = None
+    keywords: str | None = None
 
 
 class MergeBody(BaseModel):
@@ -45,6 +46,7 @@ def _person_public(p: dict) -> dict:
         "name": p["name"],
         "n_samples": p["n_samples"],
         "created_at": p["created_at"],
+        "keywords": p.get("keywords"),
     }
 
 
@@ -307,14 +309,24 @@ async def list_persons():
 
 
 @app.put("/api/persons/{person_id}")
-async def rename_person(person_id: str, body: RenameBody):
+async def update_person(person_id: str, body: PersonUpdateBody):
     if db.get_person(settings.db_path, person_id) is None:
         raise HTTPException(status_code=404, detail="Person not found")
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Name must not be empty")
-    db.update_person(settings.db_path, person_id, name=name)
-    _apply_person_change_to_jobs(person_id, new_name=name)
+    fields: dict = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name must not be empty")
+        fields["name"] = name
+    if body.keywords is not None:
+        # Empty/whitespace clears the list back to NULL.
+        fields["keywords"] = body.keywords.strip() or None
+    if fields:
+        db.update_person(settings.db_path, person_id, **fields)
+    # Only a name change needs propagating into stored transcripts; keywords
+    # only affect future transcriptions.
+    if "name" in fields:
+        _apply_person_change_to_jobs(person_id, new_name=fields["name"])
     return _person_public(db.get_person(settings.db_path, person_id))
 
 

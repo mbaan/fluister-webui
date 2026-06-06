@@ -1531,7 +1531,9 @@
       class: "person__meta",
       text: `${n} ${n === 1 ? "sample" : "samples"}`,
     }));
-    row.appendChild(main);
+
+    const top = el("div", { class: "person__top" });
+    top.appendChild(main);
 
     // Actions: merge-into select + delete
     const actions = el("div", { class: "person__actions" });
@@ -1564,7 +1566,31 @@
     del.addEventListener("click", () => deletePerson(p));
     actions.appendChild(del);
 
-    row.appendChild(actions);
+    top.appendChild(actions);
+    row.appendChild(top);
+
+    // Keyword/hotword list — biases the recogniser toward the names this person
+    // mentions. Saved on blur.
+    const kwInput = el("input", {
+      class: "person__keywords",
+      type: "text",
+      value: p.keywords || "",
+      placeholder: "keywords this person mentions (names, places)…",
+      "aria-label": `Keywords for ${p.name || "this speaker"}`,
+      maxlength: "600",
+    });
+    const commitKw = () => {
+      const next = kwInput.value.trim();
+      if (next === (p.keywords || "")) { kwInput.value = next; return; }
+      saveKeywords(p, next);
+    };
+    kwInput.addEventListener("blur", commitKw);
+    kwInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); kwInput.blur(); }
+      else if (e.key === "Escape") { kwInput.value = p.keywords || ""; kwInput.blur(); }
+    });
+    row.appendChild(kwInput);
+
     return row;
   }
 
@@ -1601,6 +1627,22 @@
     } catch (err) {
       showBanner("Couldn't rename the speaker.");
       renderPersons(); // revert input to last-known value
+    }
+  }
+
+  async function saveKeywords(p, keywords) {
+    try {
+      const res = await fetch(`${PERSONS_API}/${encodeURIComponent(p.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keywords }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const updated = await res.json();
+      p.keywords = updated.keywords; // keep the row's local copy in sync
+      clearBanner();
+    } catch (err) {
+      showBanner("Couldn't save the keywords.");
     }
   }
 

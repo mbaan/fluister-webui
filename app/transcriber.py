@@ -116,6 +116,7 @@ class Transcriber:
         batched: bool,
         duration: float,
         on_segment: Callable | None,
+        hotwords: str | None,
     ) -> tuple[list[Segment], list[Word], object]:
         """Run transcription with given settings; returns (segments, words, info)."""
         if batched:
@@ -125,6 +126,7 @@ class Transcriber:
                 batch_size=batch_size,
                 vad_filter=self.use_vad,
                 word_timestamps=True,
+                hotwords=hotwords,
             )
         else:
             segments_iter, info = self.model.transcribe(
@@ -132,6 +134,7 @@ class Transcriber:
                 language=lang,
                 vad_filter=self.use_vad,
                 word_timestamps=True,
+                hotwords=hotwords,
             )
 
         segments, words = self._consume(segments_iter, info, duration, on_segment)
@@ -147,6 +150,7 @@ class Transcriber:
         duration: float,
         language: str | None = None,
         on_segment: Callable | None = None,
+        hotwords: str | None = None,
     ) -> tuple[list[Segment], list[Word], TranscribeInfo]:
         """Transcribe *wav_path* and return ``(segments, words, TranscribeInfo)``.
 
@@ -163,6 +167,9 @@ class Transcriber:
         on_segment:
             Optional callback ``(seg: Segment, progress: float) -> None``
             called after each segment is decoded.
+        hotwords:
+            Optional space/comma-separated terms to bias the decoder toward
+            (e.g. names the recogniser tends to mishear). ``None`` applies no bias.
         """
         # Normalise language: "auto" or empty string -> None (auto-detect)
         lang = language if (language and language != "auto") else None
@@ -191,7 +198,7 @@ class Transcriber:
             try:
                 logger.debug("Transcribing with %s", label)
                 segments, words, info = self._run(
-                    wav_path, lang, batch_size, batched, duration, on_segment
+                    wav_path, lang, batch_size, batched, duration, on_segment, hotwords
                 )
                 return (
                     segments,

@@ -275,6 +275,19 @@ async def job_transcript(job_id: str):
     return {"segments": segments, "speakers": speakers}
 
 
+@app.get("/api/jobs/{job_id}/audio")
+async def job_audio(job_id: str):
+    """Serve a job's 16 kHz mono WAV so reviewers can play/seek it.
+    Starlette's FileResponse handles HTTP Range (206 + Accept-Ranges)."""
+    job = db.get_job(settings.db_path, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    wav = job.get("wav_path")
+    if not wav or not Path(wav).exists():
+        raise HTTPException(status_code=404, detail="Audio not available")
+    return FileResponse(wav, media_type="audio/wav")
+
+
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str):
     job = db.delete_job(settings.db_path, job_id)

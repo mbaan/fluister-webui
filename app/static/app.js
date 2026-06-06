@@ -175,6 +175,12 @@
         liveDetected: null,
         liveProgress: null,
         liveStatus: null,
+        // Audio playback (lazily created per card).
+        audio: null,
+        wordSpans: null, // ordered array of clickable word spans
+        wordStarts: null, // parallel array of numeric start times
+        activeWordIdx: -1, // index of the currently highlighted word span
+        audioBroken: false, // true once the audio element errors (404/decode)
       };
       ui.set(id, u);
     }
@@ -532,6 +538,9 @@
   function renderBody(card, job, u) {
     const body = card.querySelector(".card__body");
     body.hidden = false;
+    // Stop any prior audio and drop stale span caches before wiping the body so
+    // the about-to-be-removed audio element / word spans don't leak or play on.
+    teardownAudio(job.id);
     body.innerHTML = "";
 
     const status = effectiveStatus(job, u);
@@ -550,9 +559,12 @@
     if (status === "done") {
       const cached = jobJson.get(job.id);
       const data = cached ? cached.data : null;
+      const hasSegments = data && Array.isArray(data.segments) && data.segments.length > 0;
       let t;
       if (data && hasSpeakers(data)) {
         t = buildDiarizedTranscript(data);
+      } else if (hasSegments) {
+        t = buildWordTranscript(data);
       } else {
         const text = job.transcript_text || "";
         t = el("div", { class: "transcript" });
@@ -560,6 +572,11 @@
         else t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
       }
       body.appendChild(t);
+      // Cache this card's word spans for click-to-seek + live highlight, then
+      // wire clicks and append the player bar below the transcript.
+      cacheWordSpans(u, t);
+      wireWordClicks(card, job.id, t);
+      body.appendChild(buildPlayerBar(card, job.id, u));
       body.appendChild(buildActions(job));
     } else if (u.streaming || ACTIVE.has(status)) {
       const t = el("div", { class: "transcript", dataset: { live: "1" } });
@@ -571,6 +588,50 @@
     } else if (status === "error" || status === "interrupted") {
       // no transcript area beyond error-box; still offer delete via head
     }
+  }
+
+  // Append one segment's words into `container` as clickable spans. Each word
+  // span carries its numeric start time in dataset.start; a trailing text node
+  // keeps natural spacing so copy/selection reads cleanly. Segments without a
+  // `words` array (older jobs) render as a plain text node — no click target.
+  function appendWordSpans(container, seg) {
+    if (Array.isArray(seg.words) && seg.words.length) {
+      for (const w of seg.words) {
+        if (!w || typeof w.word !== "string") continue;
+        const start = safeNumber(w.start);
+        const span = el("span", {
+          class: "word",
+          text: w.word,
+          dataset: { start: start == null ? "" : String(start) },
+        });
+        container.appendChild(span);
+        container.appendChild(document.createTextNode(" "));
+      }
+    } else {
+      container.appendChild(document.createTextNode(typeof seg.text === "string" ? seg.text : ""));
+    }
+  }
+
+  // Build a flat (non-diarized) transcript of word spans from structured
+  // segments. Used for done jobs that have structured data but no speakers.
+  function buildWordTranscript(data) {
+    const t = el("div", { class: "transcript" });
+    const segs = (data && data.segments) || [];
+    let any = false;
+    let first = true;
+    for (const seg of segs) {
+      if (!seg) continue;
+      const text = typeof seg.text === "string" ? seg.text.trim() : "";
+      if (!text && !(Array.isArray(seg.words) && seg.words.length)) continue;
+      if (!first) t.appendChild(document.createTextNode(" "));
+      appendWordSpans(t, seg);
+      first = false;
+      any = true;
+    }
+    if (!any) {
+      t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
+    }
+    return t;
   }
 
   // Render structured segments grouped into speaker turns. Consecutive segments
@@ -616,9 +677,10 @@
         node.appendChild(textNode);
         turn = { node, textNode };
         turnKey = key;
-        textNode.textContent = text;
+        appendWordSpans(textNode, seg);
       } else {
-        turn.textNode.textContent += " " + text;
+        turn.textNode.appendChild(document.createTextNode(" "));
+        appendWordSpans(turn.textNode, seg);
       }
     }
     flush();
@@ -627,6 +689,266 @@
       t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
     }
     return t;
+  }
+
+  // ── Audio playback + player bar ───────────────────────────────────────
+  // At most one card's audio plays at a time. Track the currently-playing id.
+  let playingId = null;
+
+  // Format seconds as "m:ss" (no hours; transcripts are typically short, and
+  // the existing duration field handles long-form display elsewhere).
+  function formatClock(seconds) {
+    const s = safeNumber(seconds);
+    if (s == null || s < 0) return "0:00";
+    const total = Math.floor(s);
+    const sec = total % 60;
+    const min = Math.floor(total / 60);
+    return `${min}:${String(sec).padStart(2, "0")}`;
+  }
+
+  // Cache the ordered word spans (and their numeric starts) for a transcript
+  // node so the timeupdate highlighter can do a cheap linear/binary search.
+  function cacheWordSpans(u, transcriptNode) {
+    const spans = Array.from(transcriptNode.querySelectorAll(".word"));
+    const starts = [];
+    const kept = [];
+    for (const sp of spans) {
+      const v = safeNumber(sp.dataset.start);
+      if (v == null) continue; // skip words without a usable start time
+      kept.push(sp);
+      starts.push(v);
+    }
+    u.wordSpans = kept;
+    u.wordStarts = starts;
+    u.activeWordIdx = -1;
+  }
+
+  // Lazily create (once) the card's <audio> element and wire its events.
+  function ensureAudio(card, jobId, u) {
+    if (u.audio) return u.audio;
+    const audio = el("audio", { preload: "none" });
+    audio.style.display = "none";
+    u.audio = audio;
+
+    audio.addEventListener("loadedmetadata", () => {
+      updatePlayerTime(card, u);
+    });
+    audio.addEventListener("timeupdate", () => {
+      updatePlayerTime(card, u);
+      highlightAtTime(u, audio.currentTime);
+    });
+    audio.addEventListener("play", () => {
+      playingId = jobId;
+      setPlayIcon(card, true);
+    });
+    audio.addEventListener("pause", () => {
+      if (playingId === jobId) playingId = null;
+      setPlayIcon(card, false);
+      clearHighlight(u);
+    });
+    audio.addEventListener("ended", () => {
+      if (playingId === jobId) playingId = null;
+      setPlayIcon(card, false);
+      clearHighlight(u);
+    });
+    audio.addEventListener("error", () => {
+      u.audioBroken = true;
+      markPlayerUnavailable(card);
+      clearHighlight(u);
+    });
+
+    card.appendChild(audio);
+    return audio;
+  }
+
+  function audioSrcFor(jobId) {
+    return `${API}/${encodeURIComponent(jobId)}/audio`;
+  }
+
+  // Pause whatever card is currently playing (other than `keepId`), so only one
+  // plays at a time.
+  function pauseOthers(keepId) {
+    if (playingId == null || playingId === keepId) return;
+    const other = ui.get(playingId);
+    if (other && other.audio && !other.audio.paused) {
+      try { other.audio.pause(); } catch (e) { /* noop */ }
+    }
+  }
+
+  // Seek the card's audio to startSec (minus a small lead) and play it.
+  function seekAndPlay(card, jobId, startSec) {
+    const u = uiFor(jobId);
+    if (u.audioBroken) return;
+    const audio = ensureAudio(card, jobId, u);
+    pauseOthers(jobId);
+    const target = Math.max(0, (safeNumber(startSec) || 0) - 0.25);
+    const src = audioSrcFor(jobId);
+    if (!audio.src || audio.src.indexOf(src) === -1) {
+      audio.src = src;
+    }
+    if (audio.readyState >= 1) {
+      try { audio.currentTime = target; } catch (e) { /* noop */ }
+      const p = audio.play();
+      if (p && p.catch) p.catch(() => {});
+    } else {
+      const onReady = () => {
+        audio.removeEventListener("loadedmetadata", onReady);
+        audio.removeEventListener("canplay", onReady);
+        try { audio.currentTime = target; } catch (e) { /* noop */ }
+        const p = audio.play();
+        if (p && p.catch) p.catch(() => {});
+      };
+      audio.addEventListener("loadedmetadata", onReady);
+      audio.addEventListener("canplay", onReady);
+      // Kick off loading if it hasn't started.
+      try { audio.load(); } catch (e) { /* noop */ }
+    }
+  }
+
+  // Attach a single delegated click handler on the transcript so any .word
+  // seeks + plays. No-op when the audio is known to be broken.
+  function wireWordClicks(card, jobId, transcriptNode) {
+    transcriptNode.addEventListener("click", (e) => {
+      const span = e.target.closest && e.target.closest(".word");
+      if (!span || !transcriptNode.contains(span)) return;
+      const u = uiFor(jobId);
+      if (u.audioBroken) return;
+      const start = safeNumber(span.dataset.start);
+      if (start == null) return;
+      seekAndPlay(card, jobId, start);
+    });
+  }
+
+  // Build the small player bar (play/pause + "m:ss / m:ss"). Lazily creates the
+  // audio element so metadata (and a possible error) can populate the bar.
+  function buildPlayerBar(card, jobId, u) {
+    const bar = el("div", { class: "player" });
+    const btn = el("button", {
+      class: "player__btn",
+      type: "button",
+      "aria-label": "Play",
+      title: "Play / pause",
+    });
+    btn.innerHTML = playIconSvg(false);
+    btn.addEventListener("click", () => togglePlay(card, jobId));
+    bar.appendChild(btn);
+
+    const time = el("span", { class: "player__time", text: "0:00 / 0:00" });
+    bar.appendChild(time);
+
+    // Create the audio now so word clicks and the bar share one element, and so
+    // a src error (404/decode) flips the bar into its disabled state via the
+    // audio "error" handler wired in ensureAudio().
+    const audio = ensureAudio(card, jobId, u);
+    if (!audio.src) audio.src = audioSrcFor(jobId);
+    return bar;
+  }
+
+  function togglePlay(card, jobId) {
+    const u = uiFor(jobId);
+    if (u.audioBroken) return;
+    const audio = ensureAudio(card, jobId, u);
+    if (audio.paused) {
+      pauseOthers(jobId);
+      const src = audioSrcFor(jobId);
+      if (!audio.src || audio.src.indexOf(src) === -1) audio.src = src;
+      const p = audio.play();
+      if (p && p.catch) p.catch(() => {});
+    } else {
+      audio.pause();
+    }
+  }
+
+  function playIconSvg(isPlaying) {
+    return isPlaying
+      ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+  }
+
+  function setPlayIcon(card, isPlaying) {
+    const btn = card.querySelector(".player__btn");
+    if (!btn) return;
+    btn.innerHTML = playIconSvg(isPlaying);
+    btn.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
+  }
+
+  function updatePlayerTime(card, u) {
+    const time = card.querySelector(".player__time");
+    if (!time || !u.audio) return;
+    const cur = u.audio.currentTime || 0;
+    const dur = Number.isFinite(u.audio.duration) ? u.audio.duration : 0;
+    time.textContent = `${formatClock(cur)} / ${formatClock(dur)}`;
+  }
+
+  // Disable the player bar and show an "audio unavailable" state.
+  function markPlayerUnavailable(card) {
+    const bar = card.querySelector(".player");
+    if (!bar) return;
+    bar.classList.add("player--unavailable");
+    const btn = bar.querySelector(".player__btn");
+    if (btn) btn.disabled = true;
+    const time = bar.querySelector(".player__time");
+    if (time) time.textContent = "audio unavailable";
+  }
+
+  // ── Live highlight ────────────────────────────────────────────────────
+  function setActiveWord(u, idx) {
+    if (idx === u.activeWordIdx) return;
+    if (u.activeWordIdx >= 0 && u.wordSpans && u.wordSpans[u.activeWordIdx]) {
+      u.wordSpans[u.activeWordIdx].classList.remove("word--active");
+    }
+    u.activeWordIdx = idx;
+    if (idx >= 0 && u.wordSpans && u.wordSpans[idx]) {
+      u.wordSpans[idx].classList.add("word--active");
+    }
+  }
+
+  function clearHighlight(u) {
+    setActiveWord(u, -1);
+  }
+
+  // Highlight the word whose [start, nextStart) interval contains `t` (the last
+  // word's upper bound is Infinity). Binary search over the cached starts.
+  function highlightAtTime(u, t) {
+    const starts = u.wordStarts;
+    if (!starts || !starts.length) return;
+    const time = safeNumber(t);
+    if (time == null) return;
+    if (time < starts[0]) {
+      setActiveWord(u, -1);
+      return;
+    }
+    let lo = 0;
+    let hi = starts.length - 1;
+    let idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] <= time) {
+        idx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    setActiveWord(u, idx);
+  }
+
+  // Stop and reset a card's audio, and drop its cached spans/highlight. Called
+  // when a body is rebuilt or a card is collapsed/closed.
+  function teardownAudio(id) {
+    const u = ui.get(id);
+    if (!u) return;
+    if (u.audio) {
+      try { u.audio.pause(); } catch (e) { /* noop */ }
+      try { u.audio.removeAttribute("src"); u.audio.load(); } catch (e) { /* noop */ }
+      if (u.audio.parentNode) u.audio.parentNode.removeChild(u.audio);
+    }
+    if (playingId === id) playingId = null;
+    u.audio = null;
+    u.wordSpans = null;
+    u.wordStarts = null;
+    u.activeWordIdx = -1;
+    u.audioBroken = false;
   }
 
   function buildActions(job) {
@@ -723,6 +1045,7 @@
     } else {
       const body = card.querySelector(".card__body");
       body.hidden = true;
+      teardownAudio(id); // stop playback + drop span cache on collapse
       body.innerHTML = "";
       delete card.dataset.bodySig;
       card.classList.remove("is-open");
@@ -785,9 +1108,10 @@
       confirmLabel: "Delete",
     });
     if (!ok) return;
-    // Optimistic UI: stop stream, remove card.
+    // Optimistic UI: stop stream + audio, remove card.
     const u = uiFor(id);
     if (u.streaming) stopStream(id);
+    teardownAudio(id);
     try {
       const res = await fetch(`${API}/${encodeURIComponent(id)}`, { method: "DELETE" });
       if (!res.ok && res.status !== 404) {
@@ -818,6 +1142,7 @@
       for (const id of Array.from(ui.keys())) {
         const u = ui.get(id);
         if (u && u.streaming) stopStream(id);
+        teardownAudio(id);
       }
       jobs.clear();
       ui.clear();
@@ -997,6 +1322,7 @@
       if (!seen.has(id)) {
         const u = ui.get(id);
         if (u && u.streaming) stopStream(id);
+        teardownAudio(id);
         jobs.delete(id);
         ui.delete(id);
         jobJson.delete(id);
@@ -1334,9 +1660,9 @@
     if (clearAllBtn) clearAllBtn.addEventListener("click", clearAllJobs);
     poll();
     setInterval(poll, POLL_MS);
-    // Tidy up streams on unload.
+    // Tidy up streams + audio on unload.
     window.addEventListener("beforeunload", () => {
-      for (const id of ui.keys()) stopStream(id);
+      for (const id of ui.keys()) { stopStream(id); teardownAudio(id); }
     });
   }
 

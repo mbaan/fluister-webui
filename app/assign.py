@@ -90,6 +90,43 @@ def words_to_speaker_segments(words: list[Word], turns: list[DiarTurn]) -> list[
     return segments
 
 
+def attach_words_to_segments(
+    segments: list[Segment], words: list[Word]
+) -> list[dict]:
+    """Attach each word to its segment and serialise the result to dicts.
+
+    Each word is attached to the segment whose ``[start, end]`` span contains
+    the word's midpoint ``(w.start + w.end) / 2``; a word whose midpoint falls
+    in no segment is dropped.  When a midpoint sits exactly on a shared
+    boundary the first matching segment (in input order) wins.  Words within a
+    segment keep their input order (they are already time-ordered).  Returns one
+    dict per segment in the same order, each with a ``"words"`` list (empty when
+    the segment got no words).  Pure function, no side effects.
+    """
+    result: list[dict] = [
+        {
+            "start": seg.start,
+            "end": seg.end,
+            "text": seg.text,
+            "speaker": seg.speaker,
+            "person_id": seg.person_id,
+            "words": [],
+        }
+        for seg in segments
+    ]
+
+    for word in words:
+        midpoint = (word.start + word.end) / 2.0
+        for seg, payload in zip(segments, result):
+            if seg.start <= midpoint <= seg.end:
+                payload["words"].append(
+                    {"start": word.start, "end": word.end, "word": word.word}
+                )
+                break  # first containing segment wins
+
+    return result
+
+
 def segments_to_speaker_segments(
     segments: list[Segment], turns: list[DiarTurn]
 ) -> list[Segment]:

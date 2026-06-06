@@ -200,13 +200,7 @@ class JobQueue:
             )
 
             # 3. Persist results (segments + speakers stored in the DB).
-            segments_payload = [
-                {
-                    "start": s.start, "end": s.end, "text": s.text,
-                    "speaker": s.speaker, "person_id": s.person_id,
-                }
-                for s in segments
-            ]
+            segments_payload = assign.attach_words_to_segments(segments, words)
             transcript_text = "\n".join(s.text for s in segments if s.text)
             db.update_job(
                 db_path, job_id, status=db.STATUS_DONE,

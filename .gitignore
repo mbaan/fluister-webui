@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# uv
+# (uv.lock IS committed)
+
+# App data: uploads, converted audio, transcripts, sqlite db
+/data/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

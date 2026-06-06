@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>fluister</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%AC%EF%B8%8F%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+  <div class="app">
+    <header class="masthead">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12c2 0 2-4 4-4s2 8 4 8 2-10 4-10 2 6 4 6h2"/>
+          </svg>
+        </span>
+        <div class="brand__text">
+          <h1>fluister</h1>
+          <p class="subtitle">Local Dutch &amp; English transcription &middot; fully on-device</p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="uploader" aria-label="Upload audio or video">
+        <div class="dropzone" id="dropzone" tabindex="0" role="button"
+             aria-label="Drop files here or click to choose">
+          <input type="file" id="fileInput" accept="audio/*,video/*" multiple hidden>
+          <div class="dropzone__inner">
+            <span class="dropzone__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 16V4"/>
+                <path d="m7 9 5-5 5 5"/>
+                <path d="M5 16v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/>
+              </svg>
+            </span>
+            <p class="dropzone__title">Drop audio or video here</p>
+            <p class="dropzone__hint">or <span class="link">browse your files</span></p>
+            <p class="dropzone__types">m4a &middot; aac &middot; opus &middot; ogg &middot; mp3 &middot; wav &middot; mp4 &middot; mov &middot; webm &hellip;</p>
+          </div>
+        </div>
+
+        <div class="uploader__controls">
+          <label class="field">
+            <span class="field__label">Language</span>
+            <select id="language">
+              <option value="auto">Auto-detect</option>
+              <option value="nl">Nederlands</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <div class="banner" id="banner" hidden></div>
+
+      <section class="jobs" aria-label="Transcription jobs">
+        <div class="jobs__head">
+          <h2>Transcriptions</h2>
+          <span class="jobs__count" id="jobsCount"></span>
+        </div>
+        <div class="job-list" id="jobList"></div>
+        <p class="empty" id="emptyState">No transcriptions yet. Drop a file above to get started.</p>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span>fluister runs locally &mdash; your audio never leaves this machine.</span>
+    </footer>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

@@ -27,3 +27,7 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]
+markers = [
+    "slow: end-to-end tests that load a real model (run with RUN_SLOW_TESTS=1)",
+]

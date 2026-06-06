@@ -27,6 +27,10 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute must win over component display rules (e.g. .view,
+   .card__body set display:flex). Without this, hidden views/bodies stay visible. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -707,4 +711,75 @@ select:focus-visible { border-color: var(--accent); outline: none; }
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+}
+
+/* ── Speaker filter + on-card speaker chips ───────────── */
+.filter-select {
+  margin-left: auto;
+  align-self: center;
+  font-size: 12.5px;
+  padding: 6px 30px 6px 11px;
+  background-position: right 9px center;
+}
+
+.card__meta .chip {
+  font-size: 10.5px;
+  font-weight: 560;
+  padding: 1px 8px;
+  gap: 4px;
+  align-self: center;
+}
+
+/* ── Danger button ───────────────────────────────────── */
+.btn--danger {
+  color: #ffd0d0;
+  border-color: color-mix(in srgb, var(--st-error) 55%, transparent);
+  background: rgba(255, 122, 122, 0.12);
+}
+.btn--danger:hover {
+  color: #fff;
+  border-color: var(--st-error);
+  background: rgba(255, 122, 122, 0.22);
+}
+
+/* ── Confirm modal (native <dialog>) ─────────────────── */
+.modal {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  max-width: 420px;
+  width: calc(100% - 32px);
+}
+.modal::backdrop {
+  background: rgba(6, 9, 13, 0.62);
+  backdrop-filter: blur(2px);
+}
+.modal__card {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modal__title { margin: 0; font-size: 16px; font-weight: 620; }
+.modal__msg {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.modal[open] { animation: modal-in .14s ease both; }
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }

@@ -32,6 +32,8 @@
   const jobJsonPending = new Set();
   // persons: latest list from the server (for the Speakers page).
   let persons = [];
+  // Active speaker-name filter for the transcriptions list ("" = all).
+  let speakerFilterValue = "";
 
   // ── DOM refs ─────────────────────────────────────────────────────────
   const $ = (sel) => document.querySelector(sel);
@@ -50,6 +52,7 @@
   const personList = $("#personList");
   const speakersEmpty = $("#speakersEmpty");
   const speakersCount = $("#speakersCount");
+  const speakerFilter = $("#speakerFilter");
 
   // ── Small helpers ────────────────────────────────────────────────────
   function el(tag, attrs, children) {
@@ -194,6 +197,40 @@
     return job.detected_language || null;
   }
 
+  // Distinct identified speakers on a job, parsed from its `speakers` map.
+  function jobSpeakers(job) {
+    if (!job || !job.speakers) return [];
+    let m = job.speakers;
+    if (typeof m === "string") {
+      try { m = JSON.parse(m); } catch (e) { return []; }
+    }
+    if (!m || typeof m !== "object") return [];
+    const seen = new Set();
+    const out = [];
+    for (const k in m) {
+      const v = m[k] || {};
+      const name = v.name || null;
+      const key = v.person_id || k;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name, key });
+    }
+    return out;
+  }
+
+  // Rebuild the speaker filter <select> from the speakers present across jobs.
+  function populateSpeakerFilter(all) {
+    const names = new Set();
+    for (const j of all) for (const s of jobSpeakers(j)) names.add(s.name);
+    if (speakerFilterValue && !names.has(speakerFilterValue)) speakerFilterValue = "";
+    const sorted = Array.from(names).sort((a, b) => a.localeCompare(b));
+    speakerFilter.innerHTML = "";
+    speakerFilter.appendChild(el("option", { value: "", text: "All speakers" }));
+    for (const n of sorted) speakerFilter.appendChild(el("option", { value: n, text: n }));
+    speakerFilter.value = speakerFilterValue;
+    speakerFilter.hidden = sorted.length === 0;
+  }
+
   function render() {
     const all = Array.from(jobs.values());
     // Newest first by created_at (fallback to insertion as-is).
@@ -205,11 +242,22 @@
       return vb - va;
     });
 
-    jobsCount.textContent = all.length ? `${all.length}` : "";
-    emptyState.hidden = all.length > 0;
+    populateSpeakerFilter(all);
+    const shown = speakerFilterValue
+      ? all.filter((j) => jobSpeakers(j).some((s) => s.name === speakerFilterValue))
+      : all;
+
+    jobsCount.textContent = shown.length ? `${shown.length}` : "";
+    if (speakerFilterValue && shown.length === 0) {
+      emptyState.textContent = `No transcriptions with “${speakerFilterValue}”.`;
+      emptyState.hidden = false;
+    } else {
+      emptyState.textContent = "No transcriptions yet. Drop a file above to get started.";
+      emptyState.hidden = shown.length > 0;
+    }
 
     // Track which cards should exist.
-    const wanted = new Set(all.map((j) => j.id));
+    const wanted = new Set(shown.map((j) => j.id));
 
     // Remove stale cards.
     Array.from(jobList.children).forEach((node) => {
@@ -220,7 +268,7 @@
 
     // Upsert in order.
     let prev = null;
-    for (const job of all) {
+    for (const job of shown) {
       let card = jobList.querySelector(`[data-id="${cssEscape(job.id)}"]`);
       if (!card) {
         card = buildCard(job);
@@ -329,6 +377,11 @@
     if (dur) {
       meta.appendChild(el("span", { class: "dot" }));
       meta.appendChild(el("span", { text: dur }));
+    }
+    for (const sp of jobSpeakers(job)) {
+      const chip = el("span", { class: "chip", text: sp.name });
+      chip.style.setProperty("--chip-h", String(hueFor(sp.key)));
+      meta.appendChild(chip);
     }
 
     // Progress bar
@@ -623,6 +676,54 @@
     }[c]));
   }
 
+  // ── Confirm modal (native <dialog>, replaces window.confirm) ──────────
+  let _dialog = null;
+  function ensureDialog() {
+    if (_dialog) return _dialog;
+    const dlg = el("dialog", { class: "modal" });
+    const card = el("div", { class: "modal__card" });
+    card.appendChild(el("h3", { class: "modal__title" }));
+    card.appendChild(el("p", { class: "modal__msg" }));
+    const actions = el("div", { class: "modal__actions" });
+    actions.appendChild(el("button", { type: "button", class: "btn btn--ghost", dataset: { act: "cancel" }, text: "Cancel" }));
+    actions.appendChild(el("button", { type: "button", class: "btn btn--danger", dataset: { act: "confirm" }, text: "Delete" }));
+    card.appendChild(actions);
+    dlg.appendChild(card);
+    document.body.appendChild(dlg);
+    _dialog = dlg;
+    return dlg;
+  }
+
+  // Returns a Promise<boolean>. Esc / backdrop / Cancel resolve false.
+  function confirmModal(opts) {
+    const o = opts || {};
+    const dlg = ensureDialog();
+    dlg.querySelector(".modal__title").textContent = o.title || "Are you sure?";
+    dlg.querySelector(".modal__msg").textContent = o.message || "";
+    const confirmBtn = dlg.querySelector('[data-act="confirm"]');
+    const cancelBtn = dlg.querySelector('[data-act="cancel"]');
+    confirmBtn.textContent = o.confirmLabel || "Delete";
+    confirmBtn.className = "btn " + (o.danger === false ? "" : "btn--danger");
+    return new Promise((resolve) => {
+      const close = (val) => {
+        confirmBtn.onclick = null;
+        cancelBtn.onclick = null;
+        dlg.removeEventListener("cancel", onCancel);
+        dlg.removeEventListener("click", onBackdrop);
+        if (dlg.open) dlg.close();
+        resolve(val);
+      };
+      const onCancel = (e) => { e.preventDefault(); close(false); }; // Esc
+      const onBackdrop = (e) => { if (e.target === dlg) close(false); };
+      confirmBtn.onclick = () => close(true);
+      cancelBtn.onclick = () => close(false);
+      dlg.addEventListener("cancel", onCancel);
+      dlg.addEventListener("click", onBackdrop);
+      dlg.showModal();
+      confirmBtn.focus();
+    });
+  }
+
   // ── Interactions ─────────────────────────────────────────────────────
   function toggleExpand(id) {
     const u = uiFor(id);
@@ -694,7 +795,12 @@
   async function deleteJob(id) {
     const job = jobs.get(id);
     const name = job ? job.original_filename : "this transcription";
-    if (!window.confirm(`Delete "${name}"? This removes the job and its files.`)) return;
+    const ok = await confirmModal({
+      title: "Delete transcription",
+      message: `Delete “${name}”? This removes the job and its files.`,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
     // Optimistic UI: stop stream, remove card.
     const u = uiFor(id);
     if (u.streaming) stopStream(id);
@@ -1154,7 +1260,12 @@
   }
 
   async function deletePerson(p) {
-    if (!window.confirm(`Delete speaker "${p.name || "(unnamed)"}"? This can't be undone.`)) return;
+    const ok = await confirmModal({
+      title: "Delete speaker",
+      message: `Delete speaker “${p.name || "(unnamed)"}”? This can't be undone.`,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`${PERSONS_API}/${encodeURIComponent(p.id)}`, { method: "DELETE" });
       if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
@@ -1169,7 +1280,13 @@
   async function mergePersons(src, dstId) {
     const dst = persons.find((o) => o.id === dstId);
     const dstName = dst ? (dst.name || "(unnamed)") : "another speaker";
-    if (!window.confirm(`Merge "${src.name || "(unnamed)"}" into "${dstName}"? Samples move to ${dstName}.`)) return;
+    const ok = await confirmModal({
+      title: "Merge speakers",
+      message: `Merge “${src.name || "(unnamed)"}” into “${dstName}”? Samples move to ${dstName}.`,
+      confirmLabel: "Merge",
+      danger: false,
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`${PERSONS_API}/merge`, {
         method: "POST",
@@ -1189,6 +1306,12 @@
   function init() {
     wireUploader();
     wireNav();
+    if (speakerFilter) {
+      speakerFilter.addEventListener("change", () => {
+        speakerFilterValue = speakerFilter.value;
+        render();
+      });
+    }
     poll();
     setInterval(poll, POLL_MS);
     // Tidy up streams on unload.

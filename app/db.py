@@ -42,9 +42,29 @@ CREATE TABLE IF NOT EXISTS jobs (
     model_name           TEXT NOT NULL,
     created_at           TEXT NOT NULL,
     started_at           TEXT,
-    finished_at          TEXT
+    finished_at          TEXT,
+    diarized             INTEGER NOT NULL DEFAULT 0,
+    speakers             TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS persons (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    centroid   BLOB,
+    n_samples  INTEGER NOT NULL DEFAULT 0,
+    dim        INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS person_embeddings (
+    id         TEXT PRIMARY KEY,
+    person_id  TEXT NOT NULL,
+    job_id     TEXT,
+    embedding  BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pe_person ON person_embeddings (person_id);
 """
 
 
@@ -63,6 +83,16 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 def init_db(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "diarized" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN diarized INTEGER NOT NULL DEFAULT 0")
+    if "speakers" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN speakers TEXT")
 
 
 def create_job(db_path: Path, job: dict[str, Any]) -> dict[str, Any]:
@@ -138,3 +168,85 @@ def mark_interrupted(db_path: Path) -> list[str]:
                 (STATUS_INTERRUPTED, "Interrupted by server restart", *ACTIVE_STATUSES),
             )
     return ids
+
+
+# ── persons / global voice gallery ──────────────────────────────────────────
+_PERSON_COLS = ["id", "name", "created_at", "centroid", "n_samples", "dim"]
+
+
+def create_person(db_path: Path, person: dict[str, Any]) -> dict[str, Any]:
+    row = {c: person.get(c) for c in _PERSON_COLS}
+    if not row.get("created_at"):
+        row["created_at"] = now_iso()
+    if row.get("n_samples") is None:
+        row["n_samples"] = 0
+    placeholders = ", ".join(f":{c}" for c in _PERSON_COLS)
+    with _connect(db_path) as conn:
+        conn.execute(
+            f"INSERT INTO persons ({', '.join(_PERSON_COLS)}) VALUES ({placeholders})",
+            row,
+        )
+    return get_person(db_path, person["id"])  # type: ignore[return-value]
+
+
+def get_person(db_path: Path, person_id: str) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_persons(db_path: Path) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        cur = conn.execute("SELECT * FROM persons ORDER BY created_at ASC")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def update_person(db_path: Path, person_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    assignments = ", ".join(f"{k} = :{k}" for k in fields)
+    params = dict(fields)
+    params["id"] = person_id
+    with _connect(db_path) as conn:
+        conn.execute(f"UPDATE persons SET {assignments} WHERE id = :id", params)
+
+
+def delete_person(db_path: Path, person_id: str) -> dict[str, Any] | None:
+    person = get_person(db_path, person_id)
+    if person is None:
+        return None
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
+        conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+    return person
+
+
+def add_person_embedding(db_path: Path, row: dict[str, Any]) -> None:
+    cols = ["id", "person_id", "job_id", "embedding", "created_at"]
+    r = {c: row.get(c) for c in cols}
+    if not r.get("created_at"):
+        r["created_at"] = now_iso()
+    placeholders = ", ".join(f":{c}" for c in cols)
+    with _connect(db_path) as conn:
+        conn.execute(
+            f"INSERT INTO person_embeddings ({', '.join(cols)}) VALUES ({placeholders})",
+            r,
+        )
+
+
+def list_person_embeddings(db_path: Path, person_id: str) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT * FROM person_embeddings WHERE person_id = ? ORDER BY created_at ASC",
+            (person_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def reassign_embeddings(db_path: Path, src_person_id: str, dst_person_id: str) -> None:
+    """Move all of src's voice samples to dst (used when merging persons)."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE person_embeddings SET person_id = ? WHERE person_id = ?",
+            (dst_person_id, src_person_id),
+        )

@@ -11,11 +11,27 @@ from dataclasses import dataclass
 
 @dataclass
 class Segment:
-    """One transcribed segment, times in seconds from start of audio."""
+    """One transcribed segment, times in seconds from start of audio.
+
+    ``speaker`` / ``person_id`` are populated only when diarization ran:
+    ``speaker`` is the display name (person name, or a local label like
+    "SPEAKER_00"); ``person_id`` is the global person id when identified.
+    """
 
     start: float
     end: float
     text: str
+    speaker: str | None = None
+    person_id: str | None = None
+
+
+@dataclass
+class Word:
+    """One transcribed word with timing, used to align speakers to text."""
+
+    start: float
+    end: float
+    word: str
 
 
 @dataclass

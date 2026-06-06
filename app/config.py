@@ -20,6 +20,27 @@ def _env_bool(name: str, default: bool) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _load_dotenv(path: Path) -> None:
+    """Minimal .env loader: ``KEY=VALUE`` lines into ``os.environ`` without
+    overriding existing real env vars. Ignores blanks and ``#`` comments and
+    strips optional surrounding quotes."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, sep, val = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -35,9 +56,15 @@ class Settings:
     use_vad: bool
     default_language: str  # "auto" | "nl" | "en"
     max_upload_mb: int
+    # Diarization / speaker recognition
+    diarize: bool
+    diarize_model: str
+    speaker_threshold: float
+    hf_token: str | None
 
 
 def load_settings() -> Settings:
+    _load_dotenv(PROJECT_ROOT / ".env")
     data_dir = Path(os.environ.get("TRANSCRIBE_DATA_DIR", PROJECT_ROOT / "data"))
     settings = Settings(
         host=os.environ.get("TRANSCRIBE_HOST", "127.0.0.1"),
@@ -53,6 +80,12 @@ def load_settings() -> Settings:
         use_vad=_env_bool("TRANSCRIBE_VAD", True),
         default_language=os.environ.get("TRANSCRIBE_LANGUAGE", "auto"),
         max_upload_mb=int(os.environ.get("TRANSCRIBE_MAX_UPLOAD_MB", "2048")),
+        diarize=_env_bool("TRANSCRIBE_DIARIZE", True),
+        diarize_model=os.environ.get(
+            "TRANSCRIBE_DIARIZE_MODEL", "pyannote/speaker-diarization-3.1"
+        ),
+        speaker_threshold=float(os.environ.get("TRANSCRIBE_SPEAKER_THRESHOLD", "0.45")),
+        hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
     )
     return settings
 

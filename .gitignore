@@ -11,6 +11,9 @@ __pycache__/
 # App data: uploads, converted audio, transcripts, sqlite db
 /data/
 
+# Secrets (.env.example IS committed)
+.env
+
 # Editor / OS
 .vscode/
 .idea/

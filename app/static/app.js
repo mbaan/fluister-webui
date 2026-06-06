@@ -320,14 +320,24 @@
 
     // Body (only render details when expanded for cheap updates)
     if (u.expanded) {
-      // While streaming, a full rebuild would wipe the live transcript and
-      // reset scroll on every status tick. If the live area already exists,
-      // just refresh the lightweight header (stat line + detected language).
+      // A full rebuild wipes the transcript node and resets the user's scroll
+      // position (and clears any text selection). Avoid it unless the rendered
+      // content actually changed.
+      //  - Streaming: keep the live transcript, refresh only the header.
+      //  - Static (done/error): rebuild only when the body signature changes;
+      //    otherwise just refresh the header so late metadata stays fresh.
       const liveArea = card.querySelector('.transcript[data-live="1"]');
+      const body = card.querySelector(".card__body");
       if (u.streaming && liveArea) {
         refreshBodyHeader(card, job, u);
       } else {
-        renderBody(card, job, u);
+        const sig = bodySignature(job, u);
+        if (body.hidden || card.dataset.bodySig !== sig) {
+          renderBody(card, job, u);
+          card.dataset.bodySig = sig;
+        } else {
+          refreshBodyHeader(card, job, u);
+        }
       }
     }
 
@@ -352,6 +362,15 @@
     if (dur) stat.appendChild(el("span", { html: `Duration: <strong>${escapeHtml(dur)}</strong>` }));
     if (job.model_name) stat.appendChild(el("span", { html: `Model: <strong>${escapeHtml(job.model_name)}</strong>` }));
     return stat.children.length ? stat : null;
+  }
+
+  // Signature of everything that affects the static (non-streaming) body. When
+  // it's unchanged we skip rebuilding the transcript node, preserving the user's
+  // scroll position and text selection across background poll refreshes.
+  function bodySignature(job, u) {
+    const status = effectiveStatus(job, u);
+    const len = (job.transcript_text || "").length;
+    return `${status}|${job.error || ""}|${len}`;
   }
 
   // Update only the stat line in place (used during live streaming so the
@@ -471,6 +490,7 @@
       const body = card.querySelector(".card__body");
       body.hidden = true;
       body.innerHTML = "";
+      delete card.dataset.bodySig;
       card.classList.remove("is-open");
       // Keep streaming in background? No — stop to save resources; polling
       // will keep the badge/progress fresh.

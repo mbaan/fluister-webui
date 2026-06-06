@@ -83,6 +83,7 @@ All optional, via environment variables:
 | `TRANSCRIBE_DIARIZE` | `true` | run diarization when a token is present |
 | `TRANSCRIBE_DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | pyannote pipeline |
 | `TRANSCRIBE_SPEAKER_THRESHOLD` | `0.45` | cosine similarity to match a known voice |
+| `TRANSCRIBE_MIN_SPEAKER_SECONDS` | `2.0` | ignore diarized speakers with less total speech (filters noise) |
 
 ## Tests
 

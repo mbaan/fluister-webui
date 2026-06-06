@@ -246,6 +246,7 @@ class JobQueue:
         gallery = Gallery(
             self.settings.db_path, threshold=self.settings.speaker_threshold
         )
+        min_secs = self.settings.min_speaker_seconds
         # Total speaking time per local label, to identify the dominant voices
         # first (more stable assignment when several voices are present).
         label_dur: dict[str, float] = {}
@@ -256,9 +257,13 @@ class JobQueue:
         label_to_name: dict[str, str] = {}
         used: set[str] = set()
         for label in sorted(label_dur, key=label_dur.get, reverse=True):
+            # Skip short/sporadic clusters (background noise, crosstalk): don't
+            # enrol them as a person — their segments stay unlabeled.
+            if label_dur[label] < min_secs:
+                continue
             emb = embeddings.get(label)
             if emb is None:
-                continue  # no embedding for this speaker; keep its local label
+                continue  # no embedding for this speaker
             pid, _created = gallery.assign_or_create(
                 emb, job_id=job_id, exclude_ids=used
             )
@@ -276,13 +281,12 @@ class JobQueue:
             pid = label_to_person.get(s.speaker)
             if pid:
                 s.person_id = pid
-                s.speaker = label_to_name.get(s.speaker, s.speaker)
+                s.speaker = label_to_name[s.speaker]
+            else:
+                s.speaker = None  # dropped/short speaker -> unlabeled text
 
         speakers_map = {
-            label: {
-                "person_id": label_to_person.get(label),
-                "name": label_to_name.get(label, label),
-            }
-            for label in label_dur
+            label: {"person_id": label_to_person[label], "name": label_to_name[label]}
+            for label in label_to_person
         }
-        return spk, speakers_map, True
+        return spk, speakers_map, bool(label_to_person)

@@ -59,6 +59,7 @@ class Settings:
     diarize: bool
     diarize_model: str
     speaker_threshold: float
+    min_speaker_seconds: float
     hf_token: str | None
 
 
@@ -83,6 +84,7 @@ def load_settings() -> Settings:
             "TRANSCRIBE_DIARIZE_MODEL", "pyannote/speaker-diarization-community-1"
         ),
         speaker_threshold=float(os.environ.get("TRANSCRIBE_SPEAKER_THRESHOLD", "0.45")),
+        min_speaker_seconds=float(os.environ.get("TRANSCRIBE_MIN_SPEAKER_SECONDS", "2.0")),
         hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
     )
     return settings

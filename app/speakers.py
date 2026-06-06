@@ -163,19 +163,26 @@ class Gallery:
 
         A given job contributes at most one sample per person: re-adding for the
         same (person, job) replaces the previous sample rather than appending,
-        so re-diarizing a file doesn't inflate the gallery."""
+        so re-diarizing a file doesn't inflate the gallery.
+
+        Byte-identical embeddings are also de-duplicated: re-processing the same
+        audio (pyannote is deterministic) won't store a second copy, even under a
+        new job id — so reusing inputs in dev, or clear-all + re-upload, can't
+        accumulate duplicate samples that skew the centroid."""
         emb = np.asarray(embedding, dtype=np.float32)
         if job_id is not None:
             db.delete_job_embeddings(self.db_path, person_id, job_id)
-        db.add_person_embedding(
-            self.db_path,
-            {
-                "id": uuid.uuid4().hex,
-                "person_id": person_id,
-                "job_id": job_id,
-                "embedding": _emb_to_bytes(emb),
-            },
-        )
+        if not self._has_identical_embedding(person_id, emb):
+            db.add_person_embedding(
+                self.db_path,
+                {
+                    "id": uuid.uuid4().hex,
+                    "person_id": person_id,
+                    "job_id": job_id,
+                    "embedding": _emb_to_bytes(emb),
+                },
+            )
+        # Recompute regardless: the per-job delete above may have changed things.
         self._recompute_centroid(person_id)
 
     def forget_job(self, job_id: str) -> None:
@@ -218,6 +225,14 @@ class Gallery:
         ]
 
     # ── internal helpers ──────────────────────────────────────────────────────
+
+    def _has_identical_embedding(self, person_id: str, emb: np.ndarray) -> bool:
+        """True if this person already has a byte-identical embedding stored."""
+        target = _emb_to_bytes(emb)
+        return any(
+            r["embedding"] == target
+            for r in db.list_person_embeddings(self.db_path, person_id)
+        )
 
     def _recompute_centroid(self, person_id: str) -> None:
         rows = db.list_person_embeddings(self.db_path, person_id)

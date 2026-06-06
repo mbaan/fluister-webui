@@ -242,6 +242,25 @@ def test_add_sample_idempotent_per_job(tmp_path):
     g.add_sample(pid, np.array([1, 0, 0], dtype="float32"), job_id="A")
     assert g.list()[0]["n_samples"] == 1
 
-    # a different job -> two samples
-    g.add_sample(pid, np.array([1, 0, 0], dtype="float32"), job_id="B")
+    # a different job with a *different* clip -> two samples
+    g.add_sample(pid, np.array([0, 1, 0], dtype="float32"), job_id="B")
+    assert g.list()[0]["n_samples"] == 2
+
+
+def test_add_sample_skips_byte_identical_duplicate(tmp_path):
+    """Re-processing the SAME audio (even as a new job) must not store a
+    duplicate sample — pyannote is deterministic, so identical audio = identical
+    embedding. Guards against reused inputs in dev / clear-all + re-upload."""
+    g = Gallery(make_db(tmp_path), threshold=0.45)
+    v = unit(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    pid, _ = g.assign_or_create(v, job_id="jobA")
+    assert g.list()[0]["n_samples"] == 1
+
+    # exact same clip, different job id -> deduped, still one sample
+    g.add_sample(pid, v.copy(), job_id="jobB")
+    assert g.list()[0]["n_samples"] == 1
+
+    # a genuinely different clip -> appends
+    w = unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    g.add_sample(pid, w, job_id="jobC")
     assert g.list()[0]["n_samples"] == 2

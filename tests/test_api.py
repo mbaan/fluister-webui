@@ -74,12 +74,14 @@ async def test_upload_transcribe_download_delete(patched):
             files = [("files", ("signal-2026-06-06-094449.aac", b"x", "audio/aac"))]
             r = await client.post("/api/jobs", files=files, data={"language": "nl"})
             assert r.status_code == 200
-            jobs = r.json()
-            assert len(jobs) == 1
-            job_id = jobs[0]["id"]
+            data = r.json()
+            assert data["duplicates"] == []
+            created = data["created"]
+            assert len(created) == 1
+            job_id = created[0]["id"]
             # filename timestamp was parsed
-            assert jobs[0]["msg_timestamp"].startswith("2026-06-06T09:44:49")
-            assert jobs[0]["msg_timestamp_source"] == "filename"
+            assert created[0]["msg_timestamp"].startswith("2026-06-06T09:44:49")
+            assert created[0]["msg_timestamp_source"] == "filename"
 
             job = await _wait_done(client, job_id)
             assert job["status"] == db.STATUS_DONE
@@ -106,7 +108,7 @@ async def test_sse_emits_done_for_finished_job(patched):
     async with app.router.lifespan_context(app):
         async with await _client() as client:
             files = [("files", ("memo.m4a", b"x", "audio/mp4"))]
-            job_id = (await client.post("/api/jobs", files=files)).json()[0]["id"]
+            job_id = (await client.post("/api/jobs", files=files)).json()["created"][0]["id"]
             await _wait_done(client, job_id)
 
             events = []
@@ -168,3 +170,26 @@ async def test_persons_api(patched):
             assert (
                 await client.put("/api/persons/nope", json={"name": "x"})
             ).status_code == 404
+
+
+async def test_duplicate_skipped(patched):
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            content = b"hello-bytes"
+            files = [("files", ("dup.m4a", content, "audio/mp4"))]
+            first = (await client.post("/api/jobs", files=files)).json()
+            assert len(first["created"]) == 1 and first["duplicates"] == []
+            jid = first["created"][0]["id"]
+            await _wait_done(client, jid)
+
+            # same name + same size -> skipped
+            files2 = [("files", ("dup.m4a", content, "audio/mp4"))]
+            second = (await client.post("/api/jobs", files=files2)).json()
+            assert second["created"] == []
+            assert len(second["duplicates"]) == 1
+            assert second["duplicates"][0]["duplicate_of"] == jid
+
+            # same name, different size -> NOT a duplicate
+            files3 = [("files", ("dup.m4a", content + b"x", "audio/mp4"))]
+            third = (await client.post("/api/jobs", files=files3)).json()
+            assert len(third["created"]) == 1 and third["duplicates"] == []

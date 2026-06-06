@@ -99,6 +99,7 @@ async def create_jobs(
         language = "auto"
 
     created = []
+    duplicates = []
     for f in files:
         job_id = uuid.uuid4().hex
         original = f.filename or "audio"
@@ -108,6 +109,14 @@ async def create_jobs(
         with stored.open("wb") as out:
             while chunk := await f.read(1024 * 1024):
                 out.write(chunk)
+        size = stored.stat().st_size
+
+        # Skip files already transcribed (or in flight) with the same name + size.
+        dup = db.find_duplicate(settings.db_path, original, size)
+        if dup:
+            stored.unlink(missing_ok=True)
+            duplicates.append({"filename": original, "duplicate_of": dup["id"]})
+            continue
 
         parsed = parse_filename_timestamp(original)
         job = {
@@ -119,6 +128,7 @@ async def create_jobs(
             "model_name": settings.model_name,
             "progress": 0,
             "created_at": db.now_iso(),
+            "size": size,
             "msg_timestamp": parsed.dt.isoformat() if parsed else None,
             "msg_timestamp_source": parsed.source if parsed else None,
             "msg_has_time": int(parsed.has_time) if parsed else None,
@@ -127,7 +137,7 @@ async def create_jobs(
         await q.enqueue(job_id)
         created.append(row)
 
-    return created
+    return {"created": created, "duplicates": duplicates}
 
 
 @app.get("/api/jobs")

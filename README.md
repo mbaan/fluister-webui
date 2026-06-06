@@ -18,6 +18,8 @@ Nothing leaves your machine.
   diarization labels who spoke when, and a **global voice gallery** recognizes
   the same person across files. Rename/merge people on the Speakers page; labels
   show as colored chips and in the outputs.
+- **Duplicate detection** — re-uploading a file with the same name + size is
+  skipped (with a notice) instead of being transcribed again.
 - **Output formats** — TXT, SRT, VTT, JSON.
 - **Fast** — batched GPU inference (`large-v3`, float16) with automatic
   CUDA-OOM and CPU fallbacks.

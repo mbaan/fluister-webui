@@ -704,6 +704,7 @@
     const cancelBtn = dlg.querySelector('[data-act="cancel"]');
     confirmBtn.textContent = o.confirmLabel || "Delete";
     confirmBtn.className = "btn " + (o.danger === false ? "" : "btn--danger");
+    cancelBtn.hidden = o.info === true; // info mode: single OK button
     return new Promise((resolve) => {
       const close = (val) => {
         confirmBtn.onclick = null;
@@ -722,6 +723,11 @@
       dlg.showModal();
       confirmBtn.focus();
     });
+  }
+
+  // One-button info dialog (reuses the confirm modal).
+  function notify(title, message) {
+    return confirmModal({ title, message, confirmLabel: "OK", danger: false, info: true });
   }
 
   // ── Interactions ─────────────────────────────────────────────────────
@@ -1012,19 +1018,26 @@
     try {
       const res = await fetch(API, { method: "POST", body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const created = await res.json();
+      const data = await res.json();
+      const createdJobs = Array.isArray(data) ? data : (data && data.created) || [];
+      const dups = (data && data.duplicates) || [];
       // Remove placeholders, insert real jobs.
       for (const p of placeholders) {
         jobs.delete(p.id);
         ui.delete(p.id);
       }
-      if (Array.isArray(created)) {
-        for (const job of created) {
-          if (job && job.id) jobs.set(job.id, job);
-        }
+      for (const job of createdJobs) {
+        if (job && job.id) jobs.set(job.id, job);
       }
       clearBanner();
       render();
+      if (dups.length) {
+        const names = dups.map((d) => d.filename).join(", ");
+        notify(
+          "Duplicates skipped",
+          `${dups.length} file${dups.length === 1 ? "" : "s"} already transcribed and skipped: ${names}`
+        );
+      }
       // Refresh shortly to catch the worker picking jobs up.
       setTimeout(poll, 500);
     } catch (err) {

@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at           TEXT,
     finished_at          TEXT,
     diarized             INTEGER NOT NULL DEFAULT 0,
-    speakers             TEXT
+    speakers             TEXT,
+    size                 INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 
@@ -93,6 +94,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN diarized INTEGER NOT NULL DEFAULT 0")
     if "speakers" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN speakers TEXT")
+    if "size" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN size INTEGER")
+        # Backfill size from existing upload files so older jobs also dedupe.
+        for r in conn.execute("SELECT id, stored_path FROM jobs").fetchall():
+            sp = r["stored_path"]
+            try:
+                if sp and Path(sp).is_file():
+                    conn.execute(
+                        "UPDATE jobs SET size = ? WHERE id = ?",
+                        (Path(sp).stat().st_size, r["id"]),
+                    )
+            except OSError:
+                pass
 
 
 def create_job(db_path: Path, job: dict[str, Any]) -> dict[str, Any]:
@@ -103,7 +117,7 @@ def create_job(db_path: Path, job: dict[str, Any]) -> dict[str, Any]:
         "id", "original_filename", "stored_path", "wav_path", "msg_timestamp",
         "msg_timestamp_source", "msg_has_time", "language", "detected_language",
         "duration", "status", "error", "progress", "transcript_text",
-        "model_name", "created_at", "started_at", "finished_at",
+        "model_name", "created_at", "started_at", "finished_at", "size",
     ]
     row = {c: job.get(c) for c in columns}
     row.setdefault("created_at", now_iso())
@@ -151,6 +165,22 @@ def delete_job(db_path: Path, job_id: str) -> dict[str, Any] | None:
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     return job
+
+
+def find_duplicate(
+    db_path: Path, original_filename: str, size: int
+) -> dict[str, Any] | None:
+    """Return an existing non-failed job with the same filename + size, if any
+    (used to skip re-transcribing a file that was already uploaded)."""
+    statuses = (STATUS_QUEUED, STATUS_CONVERTING, STATUS_TRANSCRIBING, STATUS_DONE)
+    placeholders = ", ".join("?" for _ in statuses)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            f"SELECT * FROM jobs WHERE original_filename = ? AND size = ? "
+            f"AND status IN ({placeholders}) ORDER BY created_at LIMIT 1",
+            (original_filename, size, *statuses),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def mark_interrupted(db_path: Path) -> list[str]:

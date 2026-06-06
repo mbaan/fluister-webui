@@ -175,6 +175,30 @@ class TestJSON:
         assert segs[0]["start"] == 0.0
         assert segs[0]["end"] == 3.5
         assert segs[0]["text"] == "Goedemorgen, dit is een test."
+        assert "speaker" in segs[0]
+        assert "person_id" in segs[0]
+
+    def test_segment_speaker_person_id_null_when_unset(self, segments, meta):
+        data = json.loads(to_json(segments, meta))
+        for seg in data["segments"]:
+            assert seg["speaker"] is None
+            assert seg["person_id"] is None
+
+    def test_segment_speaker_person_id_values(self, meta):
+        segs = [Segment(start=0.0, end=1.0, text="Hi", speaker="Anna", person_id="p1")]
+        data = json.loads(to_json(segs, meta))
+        assert data["segments"][0]["speaker"] == "Anna"
+        assert data["segments"][0]["person_id"] == "p1"
+
+    def test_speakers_top_level_present_when_passed(self, segments, meta):
+        speakers_map = {"SPEAKER_00": {"person_id": "p1", "name": "Anna"}}
+        data = json.loads(to_json(segments, meta, speakers=speakers_map))
+        assert "speakers" in data
+        assert data["speakers"] == speakers_map
+
+    def test_speakers_top_level_absent_when_not_passed(self, segments, meta):
+        data = json.loads(to_json(segments, meta))
+        assert "speakers" not in data
 
     def test_non_ascii_survives(self, segments, meta):
         output = to_json(segments, meta)
@@ -240,3 +264,92 @@ class TestTXT:
         sep_idx = next(i for i, l in enumerate(lines) if l.startswith("---"))
         body_lines = [l for l in lines[sep_idx + 1:] if l]
         assert body_lines == ["Hello", "World"]
+
+
+# ---------------------------------------------------------------------------
+# Speaker labels
+# ---------------------------------------------------------------------------
+
+class TestTXTSpeakerLabels:
+    def test_speaker_prefix_on_first_segment(self, meta):
+        segs = [Segment(start=0.0, end=1.0, text="Hello", speaker="Anna")]
+        output = to_txt(segs, meta)
+        assert "Anna: Hello" in output
+
+    def test_speaker_prefix_does_not_repeat_consecutive(self, meta):
+        segs = [
+            Segment(start=0.0, end=1.0, text="Hello", speaker="Anna"),
+            Segment(start=1.0, end=2.0, text="World", speaker="Anna"),
+        ]
+        output = to_txt(segs, meta)
+        lines = output.split("\n")
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("---"))
+        body_lines = [l for l in lines[sep_idx + 1:] if l]
+        # First line has prefix, second does not
+        assert body_lines[0] == "Anna: Hello"
+        assert body_lines[1] == "World"
+
+    def test_speaker_prefix_reappears_on_speaker_change(self, meta):
+        segs = [
+            Segment(start=0.0, end=1.0, text="Hi", speaker="Anna"),
+            Segment(start=1.0, end=2.0, text="Hey", speaker="Bob"),
+            Segment(start=2.0, end=3.0, text="Bye", speaker="Anna"),
+        ]
+        output = to_txt(segs, meta)
+        lines = output.split("\n")
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("---"))
+        body_lines = [l for l in lines[sep_idx + 1:] if l]
+        assert body_lines == ["Anna: Hi", "Bob: Hey", "Anna: Bye"]
+
+    def test_no_speaker_prefix_when_none(self, meta):
+        segs = [Segment(start=0.0, end=1.0, text="Hello")]
+        output = to_txt(segs, meta)
+        assert "None:" not in output
+        assert "Hello" in output
+        lines = output.split("\n")
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("---"))
+        body_lines = [l for l in lines[sep_idx + 1:] if l]
+        assert body_lines == ["Hello"]
+
+
+class TestSRTSpeakerLabels:
+    def test_cue_text_has_speaker_prefix(self):
+        segs = [Segment(start=0.0, end=1.0, text="Hello", speaker="Anna")]
+        output = to_srt(segs)
+        assert "Anna: Hello" in output
+
+    def test_no_speaker_prefix_when_none(self):
+        segs = [Segment(start=0.0, end=1.0, text="Hello")]
+        output = to_srt(segs)
+        assert "None:" not in output
+        assert "Hello" in output
+
+    def test_each_cue_gets_own_prefix(self):
+        segs = [
+            Segment(start=0.0, end=1.0, text="Hi", speaker="Anna"),
+            Segment(start=1.0, end=2.0, text="Hey", speaker="Anna"),
+        ]
+        output = to_srt(segs)
+        # Both cues should have the prefix (no de-duplication in SRT)
+        assert output.count("Anna: ") == 2
+
+
+class TestVTTSpeakerLabels:
+    def test_cue_text_has_speaker_prefix(self):
+        segs = [Segment(start=0.0, end=1.0, text="Hello", speaker="Bob")]
+        output = to_vtt(segs)
+        assert "Bob: Hello" in output
+
+    def test_no_speaker_prefix_when_none(self):
+        segs = [Segment(start=0.0, end=1.0, text="Hello")]
+        output = to_vtt(segs)
+        assert "None:" not in output
+        assert "Hello" in output
+
+    def test_each_cue_gets_own_prefix(self):
+        segs = [
+            Segment(start=0.0, end=1.0, text="Hi", speaker="Bob"),
+            Segment(start=1.0, end=2.0, text="Hey", speaker="Bob"),
+        ]
+        output = to_vtt(segs)
+        assert output.count("Bob: ") == 2

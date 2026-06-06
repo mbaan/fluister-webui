@@ -9,14 +9,16 @@ published back to SSE subscribers using ``loop.call_soon_threadsafe``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import defaultdict
 from contextlib import suppress
 from typing import Any, Callable
 
-from app import audio, db, formats
+from app import assign, audio, db, formats
 from app.config import Settings
 from app.models import TranscriptMeta
+from app.speakers import Gallery
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,7 @@ class JobQueue:
         self._load_task: asyncio.Task | None = None
         self._model_ready = asyncio.Event()
         self.transcriber: Any | None = None
+        self.diarizer: Any | None = None
 
     def _default_factory(self) -> Any:
         # Imported lazily so tests can inject a fake without importing faster_whisper.
@@ -74,6 +77,30 @@ class JobQueue:
             )
         except Exception:  # noqa: BLE001
             logger.exception("Failed to load transcription model")
+
+        # Diarizer is optional — its absence just disables speaker labels.
+        try:
+            if self.settings.diarize and self.settings.hf_token:
+                from app.diarizer import Diarizer
+
+                self.diarizer = await asyncio.to_thread(
+                    lambda: Diarizer(
+                        model_name=self.settings.diarize_model,
+                        device=self.settings.device,
+                        hf_token=self.settings.hf_token,
+                    )
+                )
+                logger.info(
+                    "Diarizer ready (device=%s)", getattr(self.diarizer, "device", "?")
+                )
+            elif self.settings.diarize and not self.settings.hf_token:
+                logger.warning(
+                    "TRANSCRIBE_DIARIZE is on but HF_TOKEN is unset — "
+                    "speaker labels disabled."
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("Diarizer load failed — speaker labels disabled.")
+            self.diarizer = None
         finally:
             self._model_ready.set()
 
@@ -164,8 +191,13 @@ class JobQueue:
                 db.update_job(db_path, job_id, progress=progress)
 
             language = job.get("language") or "auto"
-            segments, info = await asyncio.to_thread(
+            segments, words, info = await asyncio.to_thread(
                 self.transcriber.transcribe, wav_path, duration, language, on_segment
+            )
+
+            # 2b. Diarize + identify speakers (best-effort; never fails the job).
+            segments, speakers_map, diarized = await asyncio.to_thread(
+                self._diarize_and_identify, job_id, wav_path, segments, words
             )
 
             # 3. Write outputs + persist.
@@ -177,12 +209,16 @@ class JobQueue:
                 msg_timestamp=job.get("msg_timestamp"),
                 msg_timestamp_source=job.get("msg_timestamp_source"),
             )
-            await asyncio.to_thread(self._write_outputs, job_id, segments, meta)
+            await asyncio.to_thread(
+                self._write_outputs, job_id, segments, meta, speakers_map
+            )
             transcript_text = "\n".join(s.text for s in segments if s.text)
             db.update_job(
                 db_path, job_id, status=db.STATUS_DONE,
                 detected_language=info.language, duration=info.duration,
                 progress=1.0, transcript_text=transcript_text,
+                diarized=1 if diarized else 0,
+                speakers=json.dumps(speakers_map) if speakers_map else None,
                 finished_at=db.now_iso(),
             )
             self.publish(job_id, "done", db.get_job(db_path, job_id))
@@ -195,9 +231,73 @@ class JobQueue:
             )
             self.publish(job_id, "error", {"message": str(exc)})
 
-    def _write_outputs(self, job_id: str, segments, meta: TranscriptMeta) -> None:
+    def _write_outputs(
+        self, job_id: str, segments, meta: TranscriptMeta, speakers: dict | None = None
+    ) -> None:
         out = self.settings.outputs_dir
         (out / f"{job_id}.txt").write_text(formats.to_txt(segments, meta), encoding="utf-8")
         (out / f"{job_id}.srt").write_text(formats.to_srt(segments), encoding="utf-8")
         (out / f"{job_id}.vtt").write_text(formats.to_vtt(segments), encoding="utf-8")
-        (out / f"{job_id}.json").write_text(formats.to_json(segments, meta), encoding="utf-8")
+        (out / f"{job_id}.json").write_text(
+            formats.to_json(segments, meta, speakers or None), encoding="utf-8"
+        )
+
+    def _diarize_and_identify(self, job_id, wav_path, segments, words):
+        """Best-effort diarization + global speaker identification.
+
+        Returns ``(segments, speakers_map, diarized)``. On any failure or when
+        diarization is disabled, returns the original segments unchanged.
+        """
+        if not (self.settings.diarize and self.diarizer is not None):
+            return segments, {}, False
+        try:
+            turns, embeddings = self.diarizer.diarize(wav_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("Diarization failed for job %s", job_id)
+            return segments, {}, False
+        if not turns:
+            return segments, {}, False
+
+        gallery = Gallery(
+            self.settings.db_path, threshold=self.settings.speaker_threshold
+        )
+        # Total speaking time per local label, to identify the dominant voices
+        # first (more stable assignment when several voices are present).
+        label_dur: dict[str, float] = {}
+        for t in turns:
+            label_dur[t.speaker] = label_dur.get(t.speaker, 0.0) + (t.end - t.start)
+
+        label_to_person: dict[str, str] = {}
+        label_to_name: dict[str, str] = {}
+        used: set[str] = set()
+        for label in sorted(label_dur, key=label_dur.get, reverse=True):
+            emb = embeddings.get(label)
+            if emb is None:
+                continue  # no embedding for this speaker; keep its local label
+            pid, _created = gallery.assign_or_create(
+                emb, job_id=job_id, exclude_ids=used
+            )
+            used.add(pid)
+            person = db.get_person(self.settings.db_path, pid)
+            label_to_person[label] = pid
+            label_to_name[label] = person["name"] if person else label
+
+        spk = (
+            assign.words_to_speaker_segments(words, turns)
+            if words
+            else assign.segments_to_speaker_segments(segments, turns)
+        )
+        for s in spk:
+            pid = label_to_person.get(s.speaker)
+            if pid:
+                s.person_id = pid
+                s.speaker = label_to_name.get(s.speaker, s.speaker)
+
+        speakers_map = {
+            label: {
+                "person_id": label_to_person.get(label),
+                "name": label_to_name.get(label, label),
+            }
+            for label in label_dur
+        }
+        return spk, speakers_map, True

@@ -12,7 +12,7 @@ from typing import Callable, Iterable
 import ctranslate2
 from faster_whisper import BatchedInferencePipeline, WhisperModel
 
-from app.models import Segment, TranscribeInfo
+from app.models import Segment, TranscribeInfo, Word
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +85,11 @@ class Transcriber:
         info,
         duration: float,
         on_segment: Callable | None,
-    ) -> list[Segment]:
-        """Fully consume a segments generator, fire on_segment, return list."""
+    ) -> tuple[list[Segment], list[Word]]:
+        """Fully consume a segments generator, fire on_segment, return
+        (segments, words). Words are collected when word_timestamps is on."""
         segments: list[Segment] = []
+        words: list[Word] = []
         audio_duration = info.duration or duration
         denom = max(audio_duration, 0.001)
 
@@ -97,8 +99,12 @@ class Transcriber:
             if on_segment is not None:
                 on_segment(seg, progress)
             segments.append(seg)
+            for w in getattr(raw, "words", None) or []:
+                if w.start is None or w.end is None:
+                    continue
+                words.append(Word(start=w.start, end=w.end, word=w.word))
 
-        return segments
+        return segments, words
 
     def _run(
         self,
@@ -108,24 +114,26 @@ class Transcriber:
         batched: bool,
         duration: float,
         on_segment: Callable | None,
-    ) -> tuple[list[Segment], object]:
-        """Run transcription with given settings; returns (segments, info)."""
+    ) -> tuple[list[Segment], list[Word], object]:
+        """Run transcription with given settings; returns (segments, words, info)."""
         if batched:
             segments_iter, info = self.pipeline.transcribe(
                 wav_path,
                 language=lang,
                 batch_size=batch_size,
                 vad_filter=self.use_vad,
+                word_timestamps=True,
             )
         else:
             segments_iter, info = self.model.transcribe(
                 wav_path,
                 language=lang,
                 vad_filter=self.use_vad,
+                word_timestamps=True,
             )
 
-        segments = self._consume(segments_iter, info, duration, on_segment)
-        return segments, info
+        segments, words = self._consume(segments_iter, info, duration, on_segment)
+        return segments, words, info
 
     # ------------------------------------------------------------------
     # Public API
@@ -137,8 +145,8 @@ class Transcriber:
         duration: float,
         language: str | None = None,
         on_segment: Callable | None = None,
-    ) -> tuple[list[Segment], TranscribeInfo]:
-        """Transcribe *wav_path* and return ``(segments, TranscribeInfo)``.
+    ) -> tuple[list[Segment], list[Word], TranscribeInfo]:
+        """Transcribe *wav_path* and return ``(segments, words, TranscribeInfo)``.
 
         Parameters
         ----------
@@ -180,11 +188,12 @@ class Transcriber:
             label = f"batched(batch_size={batch_size})" if batched else "non-batched"
             try:
                 logger.debug("Transcribing with %s", label)
-                segments, info = self._run(
+                segments, words, info = self._run(
                     wav_path, lang, batch_size, batched, duration, on_segment
                 )
                 return (
                     segments,
+                    words,
                     TranscribeInfo(
                         language=info.language,
                         duration=info.duration or duration,

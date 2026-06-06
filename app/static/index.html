@@ -22,9 +22,19 @@
           <p class="subtitle">Local Dutch &amp; English transcription &middot; fully on-device</p>
         </div>
       </div>
+
+      <nav class="nav" aria-label="Primary">
+        <button type="button" class="nav__btn is-active" id="navTranscriptions"
+                aria-current="page" data-view="transcriptions">Transcriptions</button>
+        <button type="button" class="nav__btn" id="navSpeakers"
+                data-view="speakers">Speakers</button>
+      </nav>
     </header>
 
     <main>
+      <div class="banner" id="banner" hidden></div>
+
+      <div class="view" id="view-transcriptions">
       <section class="uploader" aria-label="Upload audio or video">
         <div class="dropzone" id="dropzone" tabindex="0" role="button"
              aria-label="Drop files here or click to choose">
@@ -55,8 +65,6 @@
         </div>
       </section>
 
-      <div class="banner" id="banner" hidden></div>
-
       <section class="jobs" aria-label="Transcription jobs">
         <div class="jobs__head">
           <h2>Transcriptions</h2>
@@ -65,6 +73,18 @@
         <div class="job-list" id="jobList"></div>
         <p class="empty" id="emptyState">No transcriptions yet. Drop a file above to get started.</p>
       </section>
+      </div>
+
+      <div class="view" id="view-speakers" hidden>
+        <section class="speakers" aria-label="Known speakers">
+          <div class="jobs__head">
+            <h2>Speakers</h2>
+            <span class="jobs__count" id="speakersCount"></span>
+          </div>
+          <div class="person-list" id="personList"></div>
+          <p class="empty" id="speakersEmpty" hidden>No speakers yet. They appear here once a transcription is diarized.</p>
+        </section>
+      </div>
     </main>
 
     <footer class="foot">

@@ -128,10 +128,13 @@ def test_transcriber_tiny_cpu_smoke():
             collected_segs.append(seg)
             collected_progress.append(progress)
 
-        segments, info = t.transcribe(wav_path, duration=duration, on_segment=on_seg)
+        segments, words, info = t.transcribe(
+            wav_path, duration=duration, on_segment=on_seg
+        )
 
         # Return type assertions
         assert isinstance(segments, list), "segments must be a list"
+        assert isinstance(words, list), "words must be a list"
         assert isinstance(info, TranscribeInfo), "info must be TranscribeInfo"
         assert isinstance(info.language, str), "language must be a string"
         assert isinstance(info.duration, float), "duration must be a float"
@@ -162,8 +165,8 @@ def test_transcriber_language_auto_and_none_equivalent():
 
         t = Transcriber(model_name="tiny", device="cpu", compute_type="int8")
 
-        segs_none, info_none = t.transcribe(wav_path, duration=2.0, language=None)
-        segs_auto, info_auto = t.transcribe(wav_path, duration=2.0, language="auto")
+        segs_none, _w1, info_none = t.transcribe(wav_path, duration=2.0, language=None)
+        segs_auto, _w2, info_auto = t.transcribe(wav_path, duration=2.0, language="auto")
 
         assert isinstance(segs_none, list)
         assert isinstance(segs_auto, list)

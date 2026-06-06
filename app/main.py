@@ -13,10 +13,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
+from pydantic import BaseModel
+
 from app import db
 from app.config import ensure_dirs, load_settings
 from app.filename_time import parse_filename_timestamp
 from app.queue import JobQueue
+from app.speakers import Gallery
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("fluister")
@@ -31,6 +34,24 @@ FORMATS = {
     "json": "application/json; charset=utf-8",
 }
 LANGUAGES = {"auto", "nl", "en"}
+
+
+class RenameBody(BaseModel):
+    name: str
+
+
+class MergeBody(BaseModel):
+    src: str
+    dst: str
+
+
+def _person_public(p: dict) -> dict:
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "n_samples": p["n_samples"],
+        "created_at": p["created_at"],
+    }
 
 
 @asynccontextmanager
@@ -180,6 +201,59 @@ async def delete_job(job_id: str):
     for fmt in FORMATS:
         (settings.outputs_dir / f"{job_id}.{fmt}").unlink(missing_ok=True)
     return {"ok": True}
+
+
+# ── Persons (global voice gallery) ──────────────────────────────────────────
+@app.get("/api/persons")
+async def list_persons():
+    return [_person_public(p) for p in db.list_persons(settings.db_path)]
+
+
+@app.put("/api/persons/{person_id}")
+async def rename_person(person_id: str, body: RenameBody):
+    if db.get_person(settings.db_path, person_id) is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name must not be empty")
+    db.update_person(settings.db_path, person_id, name=name)
+    return _person_public(db.get_person(settings.db_path, person_id))
+
+
+@app.delete("/api/persons/{person_id}")
+async def delete_person(person_id: str):
+    if db.delete_person(settings.db_path, person_id) is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return {"ok": True}
+
+
+@app.post("/api/persons/merge")
+async def merge_persons(body: MergeBody):
+    if body.src == body.dst:
+        raise HTTPException(status_code=400, detail="Cannot merge a person into itself")
+    if (
+        db.get_person(settings.db_path, body.src) is None
+        or db.get_person(settings.db_path, body.dst) is None
+    ):
+        raise HTTPException(status_code=404, detail="Person not found")
+    Gallery(settings.db_path).merge(body.src, body.dst)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/rediarize")
+async def rediarize(job_id: str, request: Request):
+    job = db.get_job(settings.db_path, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.get("stored_path") or not Path(job["stored_path"]).exists():
+        raise HTTPException(status_code=400, detail="Original audio no longer available")
+    db.update_job(
+        settings.db_path, job_id, status=db.STATUS_QUEUED, error=None, progress=0.0,
+        diarized=0, speakers=None, transcript_text=None, detected_language=None,
+        started_at=None, finished_at=None,
+    )
+    await _queue(request).enqueue(job_id)
+    return db.get_job(settings.db_path, job_id)
 
 
 def _sse(event: str, data) -> dict:

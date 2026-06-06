@@ -34,7 +34,7 @@ class FakeTranscriber:
         for i, s in enumerate(segs, 1):
             if on_segment:
                 on_segment(s, i / len(segs))
-        return segs, TranscribeInfo(language=lang, duration=duration)
+        return segs, [], TranscribeInfo(language=lang, duration=duration)
 
 
 def _write_silent_wav(path: str) -> None:
@@ -126,3 +126,45 @@ async def test_unknown_job_404(patched):
             assert (await client.get("/api/jobs/nope")).status_code == 404
             assert (await client.get("/api/jobs/nope/download/txt")).status_code == 404
             assert (await client.delete("/api/jobs/nope")).status_code == 404
+
+
+async def test_persons_api(patched):
+    import numpy as np
+
+    from app.main import settings as app_settings
+    from app.speakers import Gallery
+
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            g = Gallery(app_settings.db_path)
+            id1, _ = g.assign_or_create(np.array([1, 0, 0], dtype="float32"))
+            id2, _ = g.assign_or_create(np.array([0, 1, 0], dtype="float32"))
+
+            listed = (await client.get("/api/persons")).json()
+            ids = {p["id"] for p in listed}
+            assert {id1, id2} <= ids
+            # response carries no raw embedding blobs
+            assert set(listed[0].keys()) == {"id", "name", "n_samples", "created_at"}
+
+            # rename
+            r = await client.put(f"/api/persons/{id1}", json={"name": "Marco"})
+            assert r.status_code == 200 and r.json()["name"] == "Marco"
+
+            # merge id2 -> id1 (samples combine, id2 disappears)
+            r = await client.post("/api/persons/merge", json={"src": id2, "dst": id1})
+            assert r.status_code == 200
+            after = (await client.get("/api/persons")).json()
+            remaining = {p["id"]: p for p in after}
+            assert id2 not in remaining and remaining[id1]["n_samples"] == 2
+
+            # cannot merge into self
+            assert (
+                await client.post("/api/persons/merge", json={"src": id1, "dst": id1})
+            ).status_code == 400
+
+            # delete + 404s
+            assert (await client.delete(f"/api/persons/{id1}")).status_code == 200
+            assert (await client.delete(f"/api/persons/{id1}")).status_code == 404
+            assert (
+                await client.put("/api/persons/nope", json={"name": "x"})
+            ).status_code == 404

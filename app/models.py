@@ -35,6 +35,19 @@ class Word:
 
 
 @dataclass
+class DiarTurn:
+    """A diarization turn: one speaker active over a time span.
+
+    ``speaker`` is a file-local label (e.g. "SPEAKER_00"); it gets mapped to a
+    global person during identification.
+    """
+
+    start: float
+    end: float
+    speaker: str
+
+
+@dataclass
 class TranscribeInfo:
     """Metadata returned by the transcriber about a completed run."""
 

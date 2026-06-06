@@ -7,6 +7,7 @@
 (function () {
   // ── Constants ────────────────────────────────────────────────────────
   const API = "/api/jobs";
+  const PERSONS_API = "/api/persons";
   const POLL_MS = 3000;
   const ACTIVE = new Set(["queued", "converting", "transcribing"]);
   const STATUS_LABEL = {
@@ -23,6 +24,14 @@
   const jobs = new Map();
   // ui: id -> { expanded, streaming, es, segs:[], liveDetected, liveProgress, liveStatus }
   const ui = new Map();
+  // jobJson: id -> { sig, data } — cached structured transcript (download/json).
+  //   `sig` is the transcript length the cache was built for, so a changed
+  //   transcript (or a persons edit, which clears the map) forces a refetch.
+  const jobJson = new Map();
+  // ids with an in-flight json fetch, to avoid duplicate requests.
+  const jobJsonPending = new Set();
+  // persons: latest list from the server (for the Speakers page).
+  let persons = [];
 
   // ── DOM refs ─────────────────────────────────────────────────────────
   const $ = (sel) => document.querySelector(sel);
@@ -33,6 +42,14 @@
   const emptyState = $("#emptyState");
   const jobsCount = $("#jobsCount");
   const banner = $("#banner");
+  const navButtons = Array.from(document.querySelectorAll(".nav__btn"));
+  const views = {
+    transcriptions: $("#view-transcriptions"),
+    speakers: $("#view-speakers"),
+  };
+  const personList = $("#personList");
+  const speakersEmpty = $("#speakersEmpty");
+  const speakersCount = $("#speakersCount");
 
   // ── Small helpers ────────────────────────────────────────────────────
   function el(tag, attrs, children) {
@@ -128,6 +145,18 @@
     if (!code) return null;
     const map = { nl: "Nederlands", en: "English", auto: "Auto-detect" };
     return map[code] || code.toUpperCase();
+  }
+
+  // Stable hue (0–359) from a string, so the same speaker keeps the same color
+  // everywhere (transcript chips + Speakers page swatch). FNV-1a-ish hash.
+  function hueFor(key) {
+    const s = String(key == null ? "" : key);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0) % 360;
   }
 
   // ── UI state accessor ────────────────────────────────────────────────
@@ -331,6 +360,10 @@
       if (u.streaming && liveArea) {
         refreshBodyHeader(card, job, u);
       } else {
+        // For a finished job, make sure its structured transcript is loaded
+        // (or refreshed if stale). The fetch resolves asynchronously and then
+        // re-enters updateCard, bumping the signature so the body rebuilds once.
+        if (status === "done") ensureJobJson(job.id);
         const sig = bodySignature(job, u);
         if (body.hidden || card.dataset.bodySig !== sig) {
           renderBody(card, job, u);
@@ -367,10 +400,63 @@
   // Signature of everything that affects the static (non-streaming) body. When
   // it's unchanged we skip rebuilding the transcript node, preserving the user's
   // scroll position and text selection across background poll refreshes.
+  //
+  // The diarized-transcript marker is included so that the body is rebuilt
+  // exactly once when the structured JSON arrives (or after a persons edit that
+  // invalidated the cache), and NOT on every poll while it stays the same.
   function bodySignature(job, u) {
     const status = effectiveStatus(job, u);
     const len = (job.transcript_text || "").length;
-    return `${status}|${job.error || ""}|${len}`;
+    let diarSig = "0";
+    if (status === "done") {
+      const cached = jobJson.get(job.id);
+      diarSig = cached ? `1:${cached.sig}` : "0";
+    }
+    return `${status}|${job.error || ""}|${len}|${diarSig}`;
+  }
+
+  // Length of a job's current plain transcript — the key the JSON cache is
+  // validated against. When it changes, the cached structured transcript is
+  // stale and we refetch.
+  function transcriptLen(job) {
+    return (job.transcript_text || "").length;
+  }
+
+  // Ensure the structured (diarized) transcript JSON for a done job is loaded.
+  // Cached per id; refetched only when the transcript changes or the cache was
+  // invalidated (persons edit). On arrival we re-run updateCard so the body
+  // signature changes and the transcript is rebuilt once into its colored form.
+  function ensureJobJson(id) {
+    const job = jobs.get(id);
+    if (!job || job.status !== "done") return;
+    const cached = jobJson.get(id);
+    if (cached && cached.sig === transcriptLen(job)) return; // fresh
+    if (jobJsonPending.has(id)) return; // already fetching
+    jobJsonPending.add(id);
+    const sigAtFetch = transcriptLen(job);
+    fetch(`${API}/${encodeURIComponent(id)}/download/json`, {
+      headers: { Accept: "application/json" },
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        jobJson.set(id, { sig: sigAtFetch, data: data || null });
+      })
+      .catch(() => {
+        // Leave the cache empty; the transcript falls back to plain text. A
+        // later poll/expand will retry.
+      })
+      .finally(() => {
+        jobJsonPending.delete(id);
+        const u = ui.get(id);
+        const card = jobList.querySelector(`[data-id="${cssEscape(id)}"]`);
+        if (card && u && u.expanded) updateCard(card, jobs.get(id) || {});
+      });
+  }
+
+  // True when the cached JSON actually carries per-segment speakers.
+  function hasSpeakers(data) {
+    if (!data || !Array.isArray(data.segments)) return false;
+    return data.segments.some((s) => s && s.speaker != null);
   }
 
   // Update only the stat line in place (used during live streaming so the
@@ -407,10 +493,17 @@
 
     // Transcript area
     if (status === "done") {
-      const text = job.transcript_text || "";
-      const t = el("div", { class: "transcript" });
-      if (text.trim()) t.textContent = text;
-      else t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
+      const cached = jobJson.get(job.id);
+      const data = cached ? cached.data : null;
+      let t;
+      if (data && hasSpeakers(data)) {
+        t = buildDiarizedTranscript(data);
+      } else {
+        const text = job.transcript_text || "";
+        t = el("div", { class: "transcript" });
+        if (text.trim()) t.textContent = text;
+        else t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
+      }
       body.appendChild(t);
       body.appendChild(buildActions(job, true));
     } else if (u.streaming || ACTIVE.has(status)) {
@@ -423,6 +516,62 @@
     } else if (status === "error" || status === "interrupted") {
       // no transcript area beyond error-box; still offer delete via head
     }
+  }
+
+  // Render structured segments grouped into speaker turns. Consecutive segments
+  // by the same speaker are merged into one turn led by a colored name chip.
+  // The chip hue is derived from a stable hash of person_id||speaker so it
+  // matches the swatch on the Speakers page.
+  function buildDiarizedTranscript(data) {
+    const t = el("div", { class: "transcript transcript--diarized" });
+    const speakers = (data && data.speakers) || {};
+    const segs = (data && data.segments) || [];
+
+    let turn = null;
+    let turnKey = null; // identity used to decide when a new turn starts
+
+    const flush = () => {
+      if (turn) t.appendChild(turn.node);
+      turn = null;
+      turnKey = null;
+    };
+
+    for (const seg of segs) {
+      if (!seg) continue;
+      const text = typeof seg.text === "string" ? seg.text.trim() : "";
+      if (!text) continue;
+
+      // Resolve a stable color key and a display name. Prefer the live speaker
+      // map (so renames/merges reflected in the JSON win), else the segment.
+      const mapEntry = seg.speaker ? speakers[seg.speaker] : null;
+      const personId = (mapEntry && mapEntry.person_id) || seg.person_id || null;
+      const name =
+        (mapEntry && mapEntry.name) || seg.speaker || (personId ? "Speaker" : null);
+      const key = personId || seg.speaker || "__none";
+
+      if (turnKey !== key) {
+        flush();
+        const node = el("div", { class: "turn" });
+        if (name) {
+          const chip = el("span", { class: "chip", text: name });
+          chip.style.setProperty("--chip-h", String(hueFor(key)));
+          node.appendChild(chip);
+        }
+        const textNode = el("div", { class: "turn__text" });
+        node.appendChild(textNode);
+        turn = { node, textNode };
+        turnKey = key;
+        textNode.textContent = text;
+      } else {
+        turn.textNode.textContent += " " + text;
+      }
+    }
+    flush();
+
+    if (!t.children.length) {
+      t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
+    }
+    return t;
   }
 
   function buildActions(job, withDownloads) {
@@ -556,6 +705,8 @@
       }
       jobs.delete(id);
       ui.delete(id);
+      jobJson.delete(id);
+      jobJsonPending.delete(id);
       render();
       clearBanner();
     } catch (err) {
@@ -731,6 +882,8 @@
         if (u && u.streaming) stopStream(id);
         jobs.delete(id);
         ui.delete(id);
+        jobJson.delete(id);
+        jobJsonPending.delete(id);
       }
     }
     render();
@@ -849,9 +1002,193 @@
     });
   }
 
+  // ── Navigation / views ───────────────────────────────────────────────
+  function showView(name) {
+    if (!views[name]) name = "transcriptions";
+    for (const key in views) {
+      if (views[key]) views[key].hidden = key !== name;
+    }
+    navButtons.forEach((btn) => {
+      const active = btn.dataset.view === name;
+      btn.classList.toggle("is-active", active);
+      if (active) btn.setAttribute("aria-current", "page");
+      else btn.removeAttribute("aria-current");
+    });
+    if (name === "speakers") loadPersons();
+  }
+
+  function wireNav() {
+    navButtons.forEach((btn) => {
+      btn.addEventListener("click", () => showView(btn.dataset.view));
+    });
+  }
+
+  // ── Speakers page ─────────────────────────────────────────────────────
+  async function loadPersons() {
+    try {
+      const res = await fetch(PERSONS_API, { headers: { Accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const list = await res.json();
+      persons = Array.isArray(list) ? list : [];
+      clearBanner();
+      renderPersons();
+    } catch (err) {
+      showBanner("Couldn't load speakers. Is the server running?");
+    }
+  }
+
+  function renderPersons() {
+    speakersCount.textContent = persons.length ? `${persons.length}` : "";
+    speakersEmpty.hidden = persons.length > 0;
+    personList.innerHTML = "";
+    for (const p of persons) {
+      personList.appendChild(buildPersonRow(p));
+    }
+  }
+
+  function buildPersonRow(p) {
+    const row = el("div", { class: "person", dataset: { id: p.id } });
+
+    const main = el("div", { class: "person__main" });
+    const swatch = el("span", { class: "swatch", "aria-hidden": "true" });
+    swatch.style.setProperty("--chip-h", String(hueFor(p.id)));
+    main.appendChild(swatch);
+
+    const nameInput = el("input", {
+      class: "person__name",
+      type: "text",
+      value: p.name || "",
+      "aria-label": "Speaker name",
+      maxlength: "120",
+    });
+    const commit = () => {
+      const next = nameInput.value.trim();
+      if (!next || next === p.name) {
+        nameInput.value = p.name || "";
+        return;
+      }
+      renamePerson(p, next);
+    };
+    nameInput.addEventListener("blur", commit);
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); nameInput.blur(); }
+      else if (e.key === "Escape") { nameInput.value = p.name || ""; nameInput.blur(); }
+    });
+    main.appendChild(nameInput);
+
+    const n = safeNumber(p.n_samples) || 0;
+    main.appendChild(el("span", {
+      class: "person__meta",
+      text: `${n} ${n === 1 ? "sample" : "samples"}`,
+    }));
+    row.appendChild(main);
+
+    // Actions: merge-into select + delete
+    const actions = el("div", { class: "person__actions" });
+
+    const others = persons.filter((o) => o.id !== p.id);
+    if (others.length) {
+      const sel = el("select", {
+        class: "merge-select",
+        "aria-label": `Merge ${p.name || "this speaker"} into another speaker`,
+      });
+      sel.appendChild(el("option", { value: "", text: "Merge into…" }));
+      for (const o of others) {
+        sel.appendChild(el("option", { value: o.id, text: o.name || "(unnamed)" }));
+      }
+      sel.addEventListener("change", () => {
+        const dst = sel.value;
+        sel.value = "";
+        if (dst) mergePersons(p, dst);
+      });
+      actions.appendChild(sel);
+    }
+
+    const del = el("button", {
+      class: "icon-btn",
+      title: "Delete speaker",
+      "aria-label": `Delete ${p.name || "speaker"}`,
+    });
+    del.innerHTML =
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+    del.addEventListener("click", () => deletePerson(p));
+    actions.appendChild(del);
+
+    row.appendChild(actions);
+    return row;
+  }
+
+  // After any persons mutation, drop the cached transcript JSON so speaker
+  // chips pick up the new/merged names on the next render, then reload.
+  function invalidatePersonsCache() {
+    jobJson.clear();
+    refreshExpandedTranscripts();
+  }
+
+  // Re-run updateCard for currently expanded done cards so they refetch JSON
+  // and re-render their (possibly recolored/renamed) speaker chips.
+  function refreshExpandedTranscripts() {
+    for (const [id, u] of ui.entries()) {
+      if (!u.expanded) continue;
+      const job = jobs.get(id);
+      const card = jobList.querySelector(`[data-id="${cssEscape(id)}"]`);
+      if (job && card) updateCard(card, job);
+    }
+  }
+
+  async function renamePerson(p, name) {
+    try {
+      const res = await fetch(`${PERSONS_API}/${encodeURIComponent(p.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      clearBanner();
+      invalidatePersonsCache();
+      await loadPersons();
+    } catch (err) {
+      showBanner("Couldn't rename the speaker.");
+      renderPersons(); // revert input to last-known value
+    }
+  }
+
+  async function deletePerson(p) {
+    if (!window.confirm(`Delete speaker "${p.name || "(unnamed)"}"? This can't be undone.`)) return;
+    try {
+      const res = await fetch(`${PERSONS_API}/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+      clearBanner();
+      invalidatePersonsCache();
+      await loadPersons();
+    } catch (err) {
+      showBanner("Couldn't delete the speaker.");
+    }
+  }
+
+  async function mergePersons(src, dstId) {
+    const dst = persons.find((o) => o.id === dstId);
+    const dstName = dst ? (dst.name || "(unnamed)") : "another speaker";
+    if (!window.confirm(`Merge "${src.name || "(unnamed)"}" into "${dstName}"? Samples move to ${dstName}.`)) return;
+    try {
+      const res = await fetch(`${PERSONS_API}/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ src: src.id, dst: dstId }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      clearBanner();
+      invalidatePersonsCache();
+      await loadPersons();
+    } catch (err) {
+      showBanner("Couldn't merge the speakers.");
+    }
+  }
+
   // ── Boot ─────────────────────────────────────────────────────────────
   function init() {
     wireUploader();
+    wireNav();
     poll();
     setInterval(poll, POLL_MS);
     // Tidy up streams on unload.

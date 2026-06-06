@@ -68,10 +68,17 @@ def to_txt(segments: list[Segment], meta: TranscriptMeta) -> str:
     lines.append("")
     lines.append("-" * 60)
 
+    last_speaker: str | None = None
     for seg in segments:
         text = seg.text.strip()
         if text:
-            lines.append(text)
+            if seg.speaker is not None and seg.speaker != last_speaker:
+                lines.append(f"{seg.speaker}: {text}")
+                last_speaker = seg.speaker
+            elif seg.speaker is not None:
+                lines.append(text)
+            else:
+                lines.append(text)
 
     return "\n".join(lines)
 
@@ -83,6 +90,8 @@ def to_srt(segments: list[Segment]) -> str:
         start = _format_srt_time(seg.start)
         end = _format_srt_time(seg.end)
         text = seg.text.strip()
+        if seg.speaker is not None:
+            text = f"{seg.speaker}: {text}"
         block = f"{i}\n{start} --> {end}\n{text}"
         blocks.append(block)
     # Each block separated by a blank line; trailing blank line at end.
@@ -96,14 +105,21 @@ def to_vtt(segments: list[Segment]) -> str:
         start = _format_vtt_time(seg.start)
         end = _format_vtt_time(seg.end)
         text = seg.text.strip()
+        if seg.speaker is not None:
+            text = f"{seg.speaker}: {text}"
         lines.append(f"{start} --> {end}")
         lines.append(text)
         lines.append("")
     return "\n".join(lines)
 
 
-def to_json(segments: list[Segment], meta: TranscriptMeta) -> str:
-    """Return a JSON string with meta and segments."""
+def to_json(segments: list[Segment], meta: TranscriptMeta, speakers: dict | None = None) -> str:
+    """Return a JSON string with meta and segments.
+
+    When *speakers* is provided, a top-level ``"speakers"`` key is included.
+    Each segment dict always contains ``"speaker"`` and ``"person_id"`` fields
+    (values may be null).
+    """
     meta_dict = {
         "filename": meta.filename,
         "language": meta.language,
@@ -113,8 +129,16 @@ def to_json(segments: list[Segment], meta: TranscriptMeta) -> str:
         "msg_timestamp_source": meta.msg_timestamp_source,
     }
     segments_list = [
-        {"start": seg.start, "end": seg.end, "text": seg.text}
+        {
+            "start": seg.start,
+            "end": seg.end,
+            "text": seg.text,
+            "speaker": seg.speaker,
+            "person_id": seg.person_id,
+        }
         for seg in segments
     ]
-    payload = {"meta": meta_dict, "segments": segments_list}
+    payload: dict = {"meta": meta_dict, "segments": segments_list}
+    if speakers is not None:
+        payload["speakers"] = speakers
     return json.dumps(payload, ensure_ascii=False, indent=2)

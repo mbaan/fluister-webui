@@ -20,7 +20,6 @@ Nothing leaves your machine.
   show as colored chips and in the outputs.
 - **Duplicate detection** — re-uploading a file with the same name + size is
   skipped (with a notice) instead of being transcribed again.
-- **Output formats** — TXT, SRT, VTT, JSON.
 - **Fast** — batched GPU inference (`large-v3`, float16) with automatic
   CUDA-OOM and CPU fallbacks.
 - **Private** — binds to `127.0.0.1` only, no auth, no cloud.
@@ -99,7 +98,7 @@ upload → SQLite job (queued) → single GPU worker:
    ffmpeg → 16 kHz mono wav → faster-whisper (words) ─┐
                                    │                   ├→ assign speakers
         live segments ── SSE ──────┘→ browser          │   → identify vs gallery
-                          pyannote diarize ────────────┘   → txt/srt/vtt/json
+                          pyannote diarize ────────────┘   → transcript (SQLite)
 ```
 
 A single background worker processes one job at a time (the GPU is the
@@ -108,6 +107,6 @@ pyannote pass diarizes the audio, words are aligned to speaker turns, and each
 turn's voice embedding is matched against the **global person gallery** (assign
 to the closest match above the threshold, else create a new person). Modules:
 `transcriber` (engine), `diarizer` (pyannote), `assign` (word↔speaker),
-`speakers` (voice gallery), `audio` (ffmpeg), `formats` (writers),
+`speakers` (voice gallery), `audio` (ffmpeg),
 `filename_time` (timestamp parser), `queue` (worker + SSE), `db` (SQLite),
 `main` (FastAPI + static UI).

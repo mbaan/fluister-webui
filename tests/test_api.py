@@ -88,15 +88,10 @@ async def test_upload_transcribe_download_delete(patched):
             assert job["detected_language"] == "nl"
             assert "Hallo daar." in job["transcript_text"]
 
-            # all four formats download
-            for fmt in ("txt", "srt", "vtt", "json"):
-                d = await client.get(f"/api/jobs/{job_id}/download/{fmt}")
-                assert d.status_code == 200, fmt
-                assert d.content
-            srt = (await client.get(f"/api/jobs/{job_id}/download/srt")).text
-            assert "-->" in srt and "1" in srt
-            meta = json.loads((await client.get(f"/api/jobs/{job_id}/download/json")).text)
-            assert meta["meta"]["language"] == "nl"
+            # structured transcript for the web UI
+            tr = (await client.get(f"/api/jobs/{job_id}/transcript")).json()
+            assert isinstance(tr["segments"], list) and len(tr["segments"]) >= 1
+            assert "Hallo daar." in tr["segments"][0]["text"]
 
             # appears in history, then delete
             assert any(j["id"] == job_id for j in (await client.get("/api/jobs")).json())
@@ -126,7 +121,7 @@ async def test_unknown_job_404(patched):
     async with app.router.lifespan_context(app):
         async with await _client() as client:
             assert (await client.get("/api/jobs/nope")).status_code == 404
-            assert (await client.get("/api/jobs/nope/download/txt")).status_code == 404
+            assert (await client.get("/api/jobs/nope/transcript")).status_code == 404
             assert (await client.delete("/api/jobs/nope")).status_code == 404
 
 
@@ -217,3 +212,65 @@ async def test_clear_all_keeps_persons(patched):
             assert len(persons) >= 1
             for p in persons:  # cleanup for other tests
                 await client.delete(f"/api/persons/{p['id']}")
+
+
+async def test_delete_person_scrubs_job_labels(patched):
+    import json as _json
+
+    from app import db as _db
+    from app.main import settings as app_settings
+
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            files = [("files", ("spk.m4a", b"zzz", "audio/mp4"))]
+            jid = (await client.post("/api/jobs", files=files)).json()["created"][0]["id"]
+            await _wait_done(client, jid)
+
+            # Simulate diarization having labeled this job with a person.
+            pid = "person-noise"
+            _db.create_person(app_settings.db_path, {"id": pid, "name": "Noise", "n_samples": 1})
+            _db.update_job(
+                app_settings.db_path, jid,
+                segments_json=_json.dumps(
+                    [{"start": 0.0, "end": 1.0, "text": "hi", "speaker": "Noise", "person_id": pid}]
+                ),
+                speakers=_json.dumps({"SPEAKER_00": {"person_id": pid, "name": "Noise"}}),
+            )
+
+            # Deleting the person must scrub its label from the transcript.
+            assert (await client.delete(f"/api/persons/{pid}")).status_code == 200
+            tr = (await client.get(f"/api/jobs/{jid}/transcript")).json()
+            assert tr["segments"][0]["speaker"] is None
+            assert tr["segments"][0]["person_id"] is None
+            job = (await client.get(f"/api/jobs/{jid}")).json()
+            assert _json.loads(job["speakers"])["SPEAKER_00"]["person_id"] is None
+
+
+async def test_startup_scrubs_orphan_speakers(patched):
+    import json as _json
+
+    from app import db as _db
+    from app.main import settings as app_settings
+
+    # A job referencing a person that doesn't exist, seeded before startup.
+    _db.init_db(app_settings.db_path)
+    jid = "orphan-job"
+    _db.create_job(app_settings.db_path, {
+        "id": jid, "original_filename": "o.m4a", "stored_path": "/x",
+        "language": "auto", "status": _db.STATUS_DONE, "model_name": "m",
+    })
+    _db.update_job(
+        app_settings.db_path, jid,
+        segments_json=_json.dumps(
+            [{"start": 0, "end": 1, "text": "hi", "speaker": "Ghost", "person_id": "ghost"}]
+        ),
+        speakers=_json.dumps({"SPEAKER_00": {"person_id": "ghost", "name": "Ghost"}}),
+    )
+
+    # Startup runs the scrub.
+    async with app.router.lifespan_context(app):
+        async with await _client() as client:
+            tr = (await client.get(f"/api/jobs/{jid}/transcript")).json()
+            assert tr["segments"][0]["person_id"] is None
+            assert tr["segments"][0]["speaker"] is None
+            await client.delete(f"/api/jobs/{jid}")

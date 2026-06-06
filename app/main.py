@@ -27,12 +27,6 @@ logger = logging.getLogger("fluister")
 settings = load_settings()
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-FORMATS = {
-    "txt": "text/plain; charset=utf-8",
-    "srt": "application/x-subrip; charset=utf-8",
-    "vtt": "text/vtt; charset=utf-8",
-    "json": "application/json; charset=utf-8",
-}
 LANGUAGES = {"auto", "nl", "en"}
 
 
@@ -54,6 +48,78 @@ def _person_public(p: dict) -> dict:
     }
 
 
+def _apply_person_change_to_jobs(
+    person_id: str, *, new_name: str | None = None,
+    new_person_id: str | None = None, remove: bool = False,
+) -> None:
+    """Propagate a person rename / merge / delete into stored job transcripts so
+    speaker labels stay correct. Rename: update name. Merge: repoint to the
+    merged person. Delete: drop the label (speaker -> None)."""
+    for job in db.list_jobs(settings.db_path):
+        speakers = json.loads(job["speakers"]) if job.get("speakers") else None
+        segs = json.loads(job["segments_json"]) if job.get("segments_json") else None
+        changed = False
+
+        if speakers:
+            for lbl, v in list(speakers.items()):
+                if (v or {}).get("person_id") != person_id:
+                    continue
+                if remove:
+                    speakers[lbl] = {"person_id": None, "name": None}
+                elif new_person_id:
+                    speakers[lbl] = {"person_id": new_person_id, "name": new_name}
+                else:
+                    speakers[lbl] = {"person_id": person_id, "name": new_name}
+                changed = True
+
+        if segs:
+            for s in segs:
+                if s.get("person_id") != person_id:
+                    continue
+                if remove:
+                    s["person_id"], s["speaker"] = None, None
+                elif new_person_id:
+                    s["person_id"], s["speaker"] = new_person_id, new_name
+                else:
+                    s["speaker"] = new_name
+                changed = True
+
+        if changed:
+            db.update_job(
+                settings.db_path, job["id"],
+                speakers=json.dumps(speakers) if speakers else None,
+                segments_json=json.dumps(segs) if segs else None,
+            )
+
+
+def _scrub_orphan_speakers() -> None:
+    """Drop speaker labels in jobs that point at persons which no longer exist
+    (e.g. a person deleted before this propagation existed). Self-healing."""
+    valid = {p["id"] for p in db.list_persons(settings.db_path)}
+    for job in db.list_jobs(settings.db_path):
+        speakers = json.loads(job["speakers"]) if job.get("speakers") else None
+        segs = json.loads(job["segments_json"]) if job.get("segments_json") else None
+        changed = False
+        if speakers:
+            for lbl, v in list(speakers.items()):
+                pid = (v or {}).get("person_id")
+                if pid and pid not in valid:
+                    speakers[lbl] = {"person_id": None, "name": None}
+                    changed = True
+        if segs:
+            for s in segs:
+                pid = s.get("person_id")
+                if pid and pid not in valid:
+                    s["person_id"], s["speaker"] = None, None
+                    changed = True
+        if changed:
+            db.update_job(
+                settings.db_path, job["id"],
+                speakers=json.dumps(speakers) if speakers else None,
+                segments_json=json.dumps(segs) if segs else None,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_dirs(settings)
@@ -61,6 +127,7 @@ async def lifespan(app: FastAPI):
     interrupted = db.mark_interrupted(settings.db_path)
     if interrupted:
         logger.info("Marked %d in-flight job(s) as interrupted", len(interrupted))
+    _scrub_orphan_speakers()
     app.state.queue = JobQueue(settings)
     await app.state.queue.start()
     logger.info("fluister ready on http://%s:%s", settings.host, settings.port)
@@ -143,13 +210,12 @@ async def create_jobs(
 @app.post("/api/jobs/clear")
 async def clear_all_jobs():
     """Delete all transcriptions and their files. Keeps persons (voice gallery)."""
-    for d in (settings.uploads_dir, settings.outputs_dir):
-        for p in d.glob("*"):
-            if p.is_file():
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
+    for p in settings.uploads_dir.glob("*"):
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
     return {"deleted": db.clear_jobs(settings.db_path)}
 
 
@@ -198,18 +264,15 @@ async def job_events(job_id: str, request: Request):
     return EventSourceResponse(gen())
 
 
-@app.get("/api/jobs/{job_id}/download/{fmt}")
-async def download(job_id: str, fmt: str):
-    if fmt not in FORMATS:
-        raise HTTPException(status_code=404, detail="Unknown format")
+@app.get("/api/jobs/{job_id}/transcript")
+async def job_transcript(job_id: str):
+    """Structured transcript (segments + speaker map) for the web UI."""
     job = db.get_job(settings.db_path, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    path = settings.outputs_dir / f"{job_id}.{fmt}"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Transcript not ready")
-    base = Path(job["original_filename"]).stem or "transcript"
-    return FileResponse(path, media_type=FORMATS[fmt], filename=f"{base}.{fmt}")
+    segments = json.loads(job["segments_json"]) if job.get("segments_json") else []
+    speakers = json.loads(job["speakers"]) if job.get("speakers") else {}
+    return {"segments": segments, "speakers": speakers}
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -221,8 +284,6 @@ async def delete_job(job_id: str):
         p = job.get(key)
         if p:
             Path(p).unlink(missing_ok=True)
-    for fmt in FORMATS:
-        (settings.outputs_dir / f"{job_id}.{fmt}").unlink(missing_ok=True)
     return {"ok": True}
 
 
@@ -240,6 +301,7 @@ async def rename_person(person_id: str, body: RenameBody):
     if not name:
         raise HTTPException(status_code=400, detail="Name must not be empty")
     db.update_person(settings.db_path, person_id, name=name)
+    _apply_person_change_to_jobs(person_id, new_name=name)
     return _person_public(db.get_person(settings.db_path, person_id))
 
 
@@ -247,6 +309,7 @@ async def rename_person(person_id: str, body: RenameBody):
 async def delete_person(person_id: str):
     if db.delete_person(settings.db_path, person_id) is None:
         raise HTTPException(status_code=404, detail="Person not found")
+    _apply_person_change_to_jobs(person_id, remove=True)
     return {"ok": True}
 
 
@@ -254,12 +317,11 @@ async def delete_person(person_id: str):
 async def merge_persons(body: MergeBody):
     if body.src == body.dst:
         raise HTTPException(status_code=400, detail="Cannot merge a person into itself")
-    if (
-        db.get_person(settings.db_path, body.src) is None
-        or db.get_person(settings.db_path, body.dst) is None
-    ):
+    dst = db.get_person(settings.db_path, body.dst)
+    if db.get_person(settings.db_path, body.src) is None or dst is None:
         raise HTTPException(status_code=404, detail="Person not found")
     Gallery(settings.db_path).merge(body.src, body.dst)
+    _apply_person_change_to_jobs(body.src, new_person_id=body.dst, new_name=dst["name"])
     return {"ok": True}
 
 

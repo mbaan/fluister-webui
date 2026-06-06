@@ -47,7 +47,6 @@ class Settings:
     port: int
     data_dir: Path
     uploads_dir: Path
-    outputs_dir: Path
     db_path: Path
     model_name: str
     device: str  # "auto" | "cuda" | "cpu"
@@ -71,7 +70,6 @@ def load_settings() -> Settings:
         port=int(os.environ.get("TRANSCRIBE_PORT", "8000")),
         data_dir=data_dir,
         uploads_dir=data_dir / "uploads",
-        outputs_dir=data_dir / "outputs",
         db_path=data_dir / "transcribe.db",
         model_name=os.environ.get("TRANSCRIBE_MODEL", "large-v3"),
         device=os.environ.get("TRANSCRIBE_DEVICE", "auto"),
@@ -92,4 +90,3 @@ def load_settings() -> Settings:
 
 def ensure_dirs(settings: Settings) -> None:
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
-    settings.outputs_dir.mkdir(parents=True, exist_ok=True)

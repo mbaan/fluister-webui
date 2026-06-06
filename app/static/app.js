@@ -489,7 +489,7 @@
     if (jobJsonPending.has(id)) return; // already fetching
     jobJsonPending.add(id);
     const sigAtFetch = transcriptLen(job);
-    fetch(`${API}/${encodeURIComponent(id)}/download/json`, {
+    fetch(`${API}/${encodeURIComponent(id)}/transcript`, {
       headers: { Accept: "application/json" },
     })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
@@ -560,7 +560,7 @@
         else t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
       }
       body.appendChild(t);
-      body.appendChild(buildActions(job, true));
+      body.appendChild(buildActions(job));
     } else if (u.streaming || ACTIVE.has(status)) {
       const t = el("div", { class: "transcript", dataset: { live: "1" } });
       u.segs.forEach((s, i) => {
@@ -629,40 +629,16 @@
     return t;
   }
 
-  function buildActions(job, withDownloads) {
+  function buildActions(job) {
     const actions = el("div", { class: "actions" });
-    if (withDownloads) {
-      const group = el("div", { class: "actions__group" });
-      ["txt", "srt", "vtt", "json"].forEach((fmt) => {
-        const a = el("a", {
-          class: "btn",
-          href: `${API}/${encodeURIComponent(job.id)}/download/${fmt}`,
-          download: "",
-        });
-        a.appendChild(downloadIcon());
-        a.appendChild(document.createTextNode(fmt.toUpperCase()));
-        group.appendChild(a);
-      });
-      actions.appendChild(group);
-
-      actions.appendChild(el("span", { class: "actions__spacer" }));
-
-      const copy = el("button", { class: "btn btn--ghost" });
-      copy.appendChild(copyIcon());
-      copy.appendChild(document.createTextNode("Copy"));
-      copy.addEventListener("click", () => copyTranscript(job, copy));
-      actions.appendChild(copy);
-    }
+    const copy = el("button", { class: "btn btn--ghost" });
+    copy.appendChild(copyIcon());
+    copy.appendChild(document.createTextNode("Copy"));
+    copy.addEventListener("click", () => copyTranscript(job, copy));
+    actions.appendChild(copy);
     return actions;
   }
 
-  function downloadIcon() {
-    const span = document.createElement("span");
-    span.style.display = "inline-flex";
-    span.innerHTML =
-      '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>';
-    return span;
-  }
   function copyIcon() {
     const span = document.createElement("span");
     span.style.display = "inline-flex";
@@ -1271,6 +1247,7 @@
   function invalidatePersonsCache() {
     jobJson.clear();
     refreshExpandedTranscripts();
+    poll(); // refresh job cards so on-card speaker chips reflect the change
   }
 
   // Re-run updateCard for currently expanded done cards so they refetch JSON

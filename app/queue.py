@@ -15,9 +15,8 @@ from collections import defaultdict
 from contextlib import suppress
 from typing import Any, Callable
 
-from app import assign, audio, db, formats
+from app import assign, audio, db
 from app.config import Settings
-from app.models import TranscriptMeta
 from app.speakers import Gallery
 
 logger = logging.getLogger(__name__)
@@ -200,23 +199,20 @@ class JobQueue:
                 self._diarize_and_identify, job_id, wav_path, segments, words
             )
 
-            # 3. Write outputs + persist.
-            meta = TranscriptMeta(
-                filename=job["original_filename"],
-                language=info.language,
-                duration=info.duration,
-                model=self.settings.model_name,
-                msg_timestamp=job.get("msg_timestamp"),
-                msg_timestamp_source=job.get("msg_timestamp_source"),
-            )
-            await asyncio.to_thread(
-                self._write_outputs, job_id, segments, meta, speakers_map
-            )
+            # 3. Persist results (segments + speakers stored in the DB).
+            segments_payload = [
+                {
+                    "start": s.start, "end": s.end, "text": s.text,
+                    "speaker": s.speaker, "person_id": s.person_id,
+                }
+                for s in segments
+            ]
             transcript_text = "\n".join(s.text for s in segments if s.text)
             db.update_job(
                 db_path, job_id, status=db.STATUS_DONE,
                 detected_language=info.language, duration=info.duration,
                 progress=1.0, transcript_text=transcript_text,
+                segments_json=json.dumps(segments_payload, ensure_ascii=False),
                 diarized=1 if diarized else 0,
                 speakers=json.dumps(speakers_map) if speakers_map else None,
                 finished_at=db.now_iso(),
@@ -230,17 +226,6 @@ class JobQueue:
                 finished_at=db.now_iso(),
             )
             self.publish(job_id, "error", {"message": str(exc)})
-
-    def _write_outputs(
-        self, job_id: str, segments, meta: TranscriptMeta, speakers: dict | None = None
-    ) -> None:
-        out = self.settings.outputs_dir
-        (out / f"{job_id}.txt").write_text(formats.to_txt(segments, meta), encoding="utf-8")
-        (out / f"{job_id}.srt").write_text(formats.to_srt(segments), encoding="utf-8")
-        (out / f"{job_id}.vtt").write_text(formats.to_vtt(segments), encoding="utf-8")
-        (out / f"{job_id}.json").write_text(
-            formats.to_json(segments, meta, speakers or None), encoding="utf-8"
-        )
 
     def _diarize_and_identify(self, job_id, wav_path, segments, words):
         """Best-effort diarization + global speaker identification.

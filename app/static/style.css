@@ -1,3 +1,21 @@
+/* Literata — a screen-optimised reading serif (OFL), self-hosted so the app
+   stays fully offline. Used for transcript prose; UI chrome stays sans. */
+@font-face {
+  font-family: "Literata";
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/static/fonts/literata-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Literata";
+  font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/static/fonts/literata-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Literata";
+  font-style: italic; font-weight: 400; font-display: swap;
+  src: url("/static/fonts/literata-latin-400-italic.woff2") format("woff2");
+}
+
 :root {
   --bg: #0c0f14;
   --bg-elev: #141a22;
@@ -14,6 +32,11 @@
   --radius-sm: 9px;
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
 
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-read: "Literata", ui-serif, Georgia, "Iowan Old Style",
+    "Palatino Linotype", serif;
+
   --st-queued: #8b97a8;
   --st-converting: #d8a64a;
   --st-transcribing: #5eb8ff;
@@ -21,8 +44,7 @@
   --st-error: #ff7a7a;
   --st-interrupted: #c98bff;
 
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-    Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  font-family: var(--font-ui);
 }
 
 * { box-sizing: border-box; }
@@ -478,14 +500,16 @@ select:focus-visible { border-color: var(--accent); outline: none; }
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  padding: 13px 14px;
-  max-height: 360px;
+  padding: 16px 18px;
+  max-height: min(62vh, 560px);
   overflow-y: auto;
-  font-size: 13.5px;
-  line-height: 1.62;
+  font-family: var(--font-read);
+  font-size: 16px;
+  line-height: 1.7;
+  font-feature-settings: "kern", "liga";
   white-space: pre-wrap;
   word-break: break-word;
-  color: #d6dde6;
+  color: #dde4ec;
 }
 .transcript:empty::before {
   content: "Waiting for audio\2026";
@@ -539,6 +563,7 @@ select:focus-visible { border-color: var(--accent); outline: none; }
   align-items: center;
   gap: 6px;
   align-self: flex-start;
+  font-family: var(--font-ui);
   font-size: 11.5px;
   font-weight: 580;
   line-height: 1;
@@ -904,15 +929,23 @@ select:focus-visible { border-color: var(--accent); outline: none; }
   color: #06121f;
 }
 
-/* Readable (LLM-tidied) transcript: flowing paragraphs, speaker-grouped. */
+/* Readable (LLM-tidied) transcript: flowing prose, speaker-grouped. Roomier and
+   larger than the raw view — this is the surface you actually sit and read. */
 .transcript.transcript--readable {
   white-space: normal;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 20px;
+  max-height: min(74vh, 760px);
+  padding: 20px 22px;
+  font-size: 17px;
+  line-height: 1.78;
+  font-feature-settings: "kern", "liga", "onum";  /* old-style numerals */
+}
+.transcript--readable .turn__text {
+  max-width: 66ch;          /* a comfortable reading measure */
 }
 .transcript--readable .para {
-  margin: 0 0 8px;
-  line-height: 1.62;
+  margin: 0 0 0.85em;
 }
 .transcript--readable .para:last-child { margin-bottom: 0; }

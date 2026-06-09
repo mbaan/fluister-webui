@@ -17,7 +17,9 @@ from typing import Any, Callable
 
 from app import assign, audio, db
 from app.config import Settings
+from app.llm_server import LlamaServer
 from app.speakers import Gallery, build_hotwords
+from app.tidier import group_turns, tidy_turns
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class JobQueue:
         self._model_ready = asyncio.Event()
         self.transcriber: Any | None = None
         self.diarizer: Any | None = None
+        self.llm_server: Any = self._default_llm_server()
 
     def _default_factory(self) -> Any:
         # Imported lazily so tests can inject a fake without importing faster_whisper.
@@ -53,6 +56,16 @@ class JobQueue:
             use_vad=s.use_vad,
         )
 
+    def _default_llm_server(self) -> Any:
+        s = self.settings
+        return LlamaServer(
+            enabled=s.tidy_enabled,
+            model_path=s.llm_model,
+            port=s.llm_port,
+            ctx=s.llm_ctx,
+            health_timeout=s.llm_health_timeout,
+        )
+
     # ── lifecycle ────────────────────────────────────────────────────────
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -60,6 +73,9 @@ class JobQueue:
         self._worker_task = asyncio.create_task(self._worker())
 
     async def stop(self) -> None:
+        # Stop the LLM first so its VRAM frees promptly on shutdown.
+        if self.llm_server is not None:
+            self.llm_server.stop()
         for task in (self._worker_task, self._load_task):
             if task is not None:
                 task.cancel()
@@ -100,6 +116,13 @@ class JobQueue:
         except Exception:  # noqa: BLE001
             logger.exception("Diarizer load failed — speaker labels disabled.")
             self.diarizer = None
+
+        # LLM tidier is optional — start it best-effort; failure just disables
+        # the readable view.
+        try:
+            await asyncio.to_thread(self.llm_server.start)
+        except Exception:  # noqa: BLE001
+            logger.exception("llama-server start failed — readable view disabled.")
         finally:
             self._model_ready.set()
 
@@ -203,7 +226,8 @@ class JobQueue:
                 self._diarize_and_identify, job_id, wav_path, segments, words
             )
 
-            # 3. Persist results (segments + speakers stored in the DB).
+            # 3. Persist results (segments + speakers stored in the DB). Mark DONE
+            # now so a restart can never strand the job mid-tidy.
             segments_payload = assign.attach_words_to_segments(segments, words)
             transcript_text = "\n".join(s.text for s in segments if s.text)
             db.update_job(
@@ -215,6 +239,23 @@ class JobQueue:
                 speakers=json.dumps(speakers_map) if speakers_map else None,
                 finished_at=db.now_iso(),
             )
+
+            # 4. Best-effort readable tidy. The job is already DONE; we only delay
+            # the *live* `done` event so a watching client keeps its stream open
+            # until the readable view arrives.
+            if self.llm_server is not None and self.llm_server.available:
+                self.publish(job_id, "status", {
+                    "status": "tidying", "progress": 1.0,
+                    "detected_language": info.language,
+                })
+                tidied = await asyncio.to_thread(self._maybe_tidy, job_id, segments)
+                if tidied is not None:
+                    db.update_job(
+                        db_path, job_id,
+                        tidied_json=json.dumps(tidied, ensure_ascii=False),
+                    )
+                    self.publish(job_id, "tidied", {"tidied": tidied})
+
             self.publish(job_id, "done", db.get_job(db_path, job_id))
 
         except Exception as exc:  # noqa: BLE001
@@ -224,6 +265,21 @@ class JobQueue:
                 finished_at=db.now_iso(),
             )
             self.publish(job_id, "error", {"message": str(exc)})
+
+    def _maybe_tidy(self, job_id: str, segments) -> list[dict] | None:
+        """Best-effort readable tidy. Returns paragraphs or None (LLM down / error)."""
+        if not (self.llm_server is not None and self.llm_server.available):
+            return None
+        try:
+            turns = group_turns(segments)
+            if not turns:
+                return None
+            return tidy_turns(
+                turns, self.llm_server.base_url, timeout=self.settings.llm_request_timeout
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Tidy pass failed for job %s", job_id)
+            return None
 
     def _diarize_and_identify(self, job_id, wav_path, segments, words):
         """Best-effort diarization + global speaker identification.

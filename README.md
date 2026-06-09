@@ -18,6 +18,11 @@ Nothing leaves your machine.
   diarization labels who spoke when, and a **global voice gallery** recognizes
   the same person across files. Rename/merge people on the Speakers page; labels
   show as colored chips and in the outputs.
+- **Readable transcripts** — an optional, best-effort local-LLM pass turns the
+  raw transcript into a punctuated, paragraphed, filler-free **Readable** view
+  (Dutch/English preserved). It *tidies, never fixes* — your words are kept, just
+  cleaned up. Toggle back to **Raw** any time to see the untouched, timestamped,
+  click-to-play transcript.
 - **Duplicate detection** — re-uploading a file with the same name + size is
   skipped (with a notice) instead of being transcribed again.
 - **Fast** — batched GPU inference (`large-v3`, float16) with automatic
@@ -54,6 +59,25 @@ Without a token, transcription still works — only speaker labels are disabled.
 To add speakers to files transcribed earlier, use **Re-diarize**
 (`POST /api/jobs/{id}/rediarize`).
 
+### Optional: readable transcripts (local LLM)
+
+A best-effort post-pass cleans each transcript into a **Readable** view
+(punctuation, paragraphs, "uhm" removal). It runs a local
+[`llama-server`](https://github.com/ggml-org/llama.cpp) that **fluister starts
+and stops itself** — set `TRANSCRIBE_LLM_MODEL` to a GGUF to enable it:
+
+```bash
+# in .env
+TRANSCRIBE_LLM_MODEL=/path/to/Qwen3-30B-A3B-Q4_K_M.gguf
+```
+
+fluister launches it co-resident with whisper on the GPU using
+`llama-server -m <model> --cpu-moe -ngl 99 -c 8192 -ctk q8_0 -ctv q8_0`
+(MoE experts offloaded to system RAM so it fits alongside whisper + diarizer on a
+10 GB card). If the model isn't set or the server can't start, transcription is
+unaffected — there's just no Readable view. The tidier *tidies, never fixes*: it
+won't recover misheard words (bias names via per-person keywords instead).
+
 ## Run
 
 ```bash
@@ -84,6 +108,12 @@ All optional, via environment variables:
 | `TRANSCRIBE_DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | pyannote pipeline |
 | `TRANSCRIBE_SPEAKER_THRESHOLD` | `0.45` | cosine similarity to match a known voice |
 | `TRANSCRIBE_MIN_SPEAKER_SECONDS` | `2.0` | ignore diarized speakers with less total speech (filters noise) |
+| `TRANSCRIBE_TIDY` | `true` | enable the readable LLM tidy pass (needs a model below) |
+| `TRANSCRIBE_LLM_MODEL` | — | GGUF path for the tidier; unset disables the Readable view |
+| `TRANSCRIBE_LLM_PORT` | `8080` | port fluister runs `llama-server` on |
+| `TRANSCRIBE_LLM_CTX` | `8192` | `llama-server` context size |
+| `TRANSCRIBE_LLM_HEALTH_TIMEOUT` | `120` | seconds to wait for `llama-server` `/health` |
+| `TRANSCRIBE_LLM_REQUEST_TIMEOUT` | `120` | seconds per tidy request |
 
 ## Tests
 
@@ -106,8 +136,10 @@ A single background worker processes one job at a time (the GPU is the
 bottleneck); additional uploads queue up. After transcription, an optional
 pyannote pass diarizes the audio, words are aligned to speaker turns, and each
 turn's voice embedding is matched against the **global person gallery** (assign
-to the closest match above the threshold, else create a new person). Modules:
+to the closest match above the threshold, else create a new person). Finally, if
+a tidier LLM is configured, a best-effort pass produces the Readable view — the
+job is already marked `done` first, so this never blocks or strands it. Modules:
 `transcriber` (engine), `diarizer` (pyannote), `assign` (word↔speaker),
-`speakers` (voice gallery), `audio` (ffmpeg),
-`filename_time` (timestamp parser), `queue` (worker + SSE), `db` (SQLite),
-`main` (FastAPI + static UI).
+`speakers` (voice gallery), `audio` (ffmpeg), `tidier` (LLM readable pass),
+`llm_server` (llama-server lifecycle), `filename_time` (timestamp parser),
+`queue` (worker + SSE), `db` (SQLite), `main` (FastAPI + static UI).

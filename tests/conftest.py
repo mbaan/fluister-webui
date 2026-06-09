@@ -10,6 +10,10 @@ import tempfile
 os.environ.setdefault(
     "TRANSCRIBE_DATA_DIR", tempfile.mkdtemp(prefix="fluister-test-")
 )
+# Never start/download the tidy LLM during tests. The app lifespan runs in the
+# API tests, so without this a real model path would spawn an 18 GB llama-server.
+# (set in os.environ before app import so it wins over any .env value.)
+os.environ.setdefault("TRANSCRIBE_TIDY", "false")
 
 
 import pytest

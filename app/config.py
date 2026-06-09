@@ -12,6 +12,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Default tidy LLM — resolved into the HF cache on first use (like large-v3).
+# Non-thinking Instruct variant so it never emits <think> blocks into the output.
+DEFAULT_LLM_REPO = "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
+DEFAULT_LLM_FILE = "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
+
 
 def _env_bool(name: str, default: bool) -> bool:
     val = os.environ.get(name)
@@ -63,7 +68,9 @@ class Settings:
     hf_token: str | None
     # LLM tidy / readability post-pass
     tidy_enabled: bool
-    llm_model: str | None
+    llm_repo: str | None     # HF repo id, resolved into the HF cache (like whisper/pyannote)
+    llm_file: str | None     # GGUF filename within that repo
+    llm_model: str | None    # optional explicit local-path override (skips HF resolution)
     llm_port: int
     llm_ctx: int
     llm_health_timeout: int
@@ -73,11 +80,6 @@ class Settings:
 def load_settings() -> Settings:
     _load_dotenv(PROJECT_ROOT / ".env")
     data_dir = Path(os.environ.get("TRANSCRIBE_DATA_DIR", PROJECT_ROOT / "data"))
-    # Resolve a relative LLM model path against the project root so it works
-    # regardless of the launch directory (mirrors how data_dir is rooted).
-    _llm_model = os.environ.get("TRANSCRIBE_LLM_MODEL") or None
-    if _llm_model and not os.path.isabs(_llm_model):
-        _llm_model = str(PROJECT_ROOT / _llm_model)
     settings = Settings(
         host=os.environ.get("TRANSCRIBE_HOST", "127.0.0.1"),
         port=int(os.environ.get("TRANSCRIBE_PORT", "8000")),
@@ -99,7 +101,9 @@ def load_settings() -> Settings:
         min_speaker_seconds=float(os.environ.get("TRANSCRIBE_MIN_SPEAKER_SECONDS", "2.0")),
         hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
         tidy_enabled=_env_bool("TRANSCRIBE_TIDY", True),
-        llm_model=_llm_model,
+        llm_repo=os.environ.get("TRANSCRIBE_LLM_REPO", DEFAULT_LLM_REPO),
+        llm_file=os.environ.get("TRANSCRIBE_LLM_FILE", DEFAULT_LLM_FILE),
+        llm_model=os.environ.get("TRANSCRIBE_LLM_MODEL") or None,
         llm_port=int(os.environ.get("TRANSCRIBE_LLM_PORT", "8080")),
         llm_ctx=int(os.environ.get("TRANSCRIBE_LLM_CTX", "8192")),
         llm_health_timeout=int(os.environ.get("TRANSCRIBE_LLM_HEALTH_TIMEOUT", "120")),

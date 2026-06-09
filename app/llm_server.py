@@ -43,14 +43,21 @@ class LlamaServer:
         self,
         *,
         enabled: bool,
-        model_path: str | None,
         port: int,
         ctx: int,
         health_timeout: int,
+        repo: str | None = None,
+        file: str | None = None,
+        token: str | None = None,
+        model_path: str | None = None,
         host: str = "127.0.0.1",
         binary: str = "llama-server",
     ) -> None:
         self.enabled = enabled
+        self.repo = repo
+        self.file = file
+        self.token = token
+        # Explicit local override, or the path resolved from the HF cache at start().
         self.model_path = model_path
         self.port = port
         self.ctx = ctx
@@ -59,6 +66,26 @@ class LlamaServer:
         self.binary = binary
         self.available = False
         self._proc: subprocess.Popen | None = None
+
+    def _resolve_model(self) -> str | None:
+        """Resolve the GGUF path the same way whisper/pyannote resolve theirs.
+
+        An explicit local override (``model_path``) wins; otherwise download/locate
+        ``file`` from ``repo`` via the HF cache (``~/.cache/huggingface``), so it
+        shows up in ``hf cache ls`` and is cleanable with ``hf cache rm``. Returns
+        a path or ``None``; HF/network errors propagate to ``start()`` (best-effort)."""
+        if self.model_path:
+            if os.path.isfile(self.model_path):
+                return self.model_path
+            logger.warning(
+                "TRANSCRIBE_LLM_MODEL set but file not found: %s", self.model_path
+            )
+            return None
+        if self.repo and self.file:
+            from huggingface_hub import hf_hub_download  # same machinery as faster-whisper
+
+            return hf_hub_download(self.repo, self.file, token=self.token)
+        return None
 
     @property
     def base_url(self) -> str:
@@ -83,12 +110,18 @@ class LlamaServer:
         if not self.enabled:
             logger.info("Tidy disabled (TRANSCRIBE_TIDY) — no LLM started.")
             return
-        if not self.model_path or not os.path.isfile(self.model_path):
+        try:
+            path = self._resolve_model()
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not resolve tidy LLM model — readable view disabled.")
+            return
+        if not path:
             logger.warning(
-                "Tidy LLM model not found (TRANSCRIBE_LLM_MODEL=%r) — readable view disabled.",
-                self.model_path,
+                "No tidy LLM model configured — set TRANSCRIBE_LLM_REPO + TRANSCRIBE_LLM_FILE "
+                "(or TRANSCRIBE_LLM_MODEL for a local file). Readable view disabled."
             )
             return
+        self.model_path = path
         if _port_in_use(self.host, self.port):
             logger.warning(
                 "Port %s already in use — not starting a second llama-server. "

@@ -60,6 +60,9 @@ class JobQueue:
         s = self.settings
         return LlamaServer(
             enabled=s.tidy_enabled,
+            repo=s.llm_repo,
+            file=s.llm_file,
+            token=s.hf_token,
             model_path=s.llm_model,
             port=s.llm_port,
             ctx=s.llm_ctx,
@@ -117,14 +120,16 @@ class JobQueue:
             logger.exception("Diarizer load failed — speaker labels disabled.")
             self.diarizer = None
 
-        # LLM tidier is optional — start it best-effort; failure just disables
-        # the readable view.
+        # Transcription can start now — the tidier LLM is optional enrichment and
+        # must NOT gate readiness (its weights may download from HF on first use).
+        self._model_ready.set()
+
+        # Start the tidier LLM best-effort, after readiness so a first-run model
+        # download never blocks transcription.
         try:
             await asyncio.to_thread(self.llm_server.start)
         except Exception:  # noqa: BLE001
             logger.exception("llama-server start failed — readable view disabled.")
-        finally:
-            self._model_ready.set()
 
     @property
     def model_ready(self) -> bool:

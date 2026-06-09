@@ -65,11 +65,12 @@ If it still doesn't fit, the documented fallback is a smaller quant / lower `-ng
 
 New `LlamaServer` class, no whisper/torch deps. Owns the full lifecycle:
 
-- `start()` — if `TRANSCRIBE_TIDY` is on and the GGUF path exists, spawn
-  `llama-server -m <model> --port <port> --cpu-moe -ngl 99 -c <ctx> -ctk q8_0
+- `start()` — if `TRANSCRIBE_TIDY` is on, resolve the GGUF path (`_resolve_model`,
+  see §5: local override else HF cache), then spawn
+  `llama-server -m <resolved> --port <port> --cpu-moe -ngl 99 -c <ctx> -ctk q8_0
   -ctv q8_0`. Poll `GET /health` until ready or a timeout (~120 s). On any failure
-  (binary missing, model missing, OOM, health timeout) set `available = False` and
-  log — never raise into the app.
+  (binary missing, model unresolved, OOM, health timeout) set `available = False`
+  and log — never raise into the app.
 - **Spawn isolation:** `start_new_session=True` (own process group) so the whole
   group can be signalled together.
 - **Orphan backstop (Linux):** `preexec_fn` sets `PR_SET_PDEATHSIG` (SIGKILL) so if
@@ -154,13 +155,21 @@ load) and `stop()`ped in `stop()`. The FastAPI lifespan shutdown must call
 New `Settings` fields + env:
 
 - `TRANSCRIBE_TIDY` (bool, default `true`) → `tidy_enabled`
-- `TRANSCRIBE_LLM_MODEL` (GGUF path; if missing/unset → tidy disabled) → `llm_model`
+- `TRANSCRIBE_LLM_REPO` / `TRANSCRIBE_LLM_FILE` → `llm_repo` / `llm_file`, default to
+  `unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF` + `…-Q4_K_M.gguf`
+- `TRANSCRIBE_LLM_MODEL` → `llm_model`, **optional** explicit local-path override
 - `TRANSCRIBE_LLM_PORT` (default `8080`) → `llm_port`
 - `TRANSCRIBE_LLM_CTX` (default `8192`) → `llm_ctx`
 - `TRANSCRIBE_LLM_HEALTH_TIMEOUT` (default `120`) → `llm_health_timeout`
 
-Document the resolved `llama-server` launch command + the new env in
-`.env.example` and `README.md`.
+**Model resolution (reuses the whisper/pyannote pattern):** `LlamaServer._resolve_model`
+uses `llm_model` if set, else `huggingface_hub.hf_hub_download(repo, file, token=hf_token)`
+— so the GGUF lands in `~/.cache/huggingface` (downloaded on first use, visible in
+`hf cache ls`, removable via `hf cache rm`), not a bespoke `models/` dir. `HF_TOKEN`
+is reused. The resolve runs **after** `_model_ready` is set so a first-run download
+never blocks transcription.
+
+Document the new env + behavior in `.env.example` and `README.md`.
 
 ## 6. Frontend (`app/static/app.js`, `index.html`, `style.css`)
 

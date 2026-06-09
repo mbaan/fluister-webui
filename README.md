@@ -64,19 +64,17 @@ To add speakers to files transcribed earlier, use **Re-diarize**
 A best-effort post-pass cleans each transcript into a **Readable** view
 (punctuation, paragraphs, "uhm" removal). It runs a local
 [`llama-server`](https://github.com/ggml-org/llama.cpp) that **fluister starts
-and stops itself** — set `TRANSCRIBE_LLM_MODEL` to a GGUF to enable it.
+and stops itself**.
 
-Recommended model: **Qwen3-30B-A3B-Instruct-2507** (Q4_K_M, ~18.6 GB) — a
-non-thinking MoE that fits alongside whisper via `--cpu-moe`. Download it into
-`models/` (gitignored):
+It's **on by default** and resolves its model the same way whisper does — by HF
+identifier, into `~/.cache/huggingface` on first use (so it's listed by
+`hf cache ls` and removable with `hf cache rm`). The default is
+**Qwen3-30B-A3B-Instruct-2507** (Q4_K_M, ~18.6 GB) — a non-thinking MoE that fits
+alongside whisper via `--cpu-moe` — so the **first run downloads ~18.6 GB**.
 
-```bash
-uv run hf download unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF \
-  Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --local-dir models
-
-# then in .env
-TRANSCRIBE_LLM_MODEL=models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
-```
+- Disable it: `TRANSCRIBE_TIDY=false`.
+- Use a different HF GGUF: `TRANSCRIBE_LLM_REPO` + `TRANSCRIBE_LLM_FILE`.
+- Use a local file instead of the cache: `TRANSCRIBE_LLM_MODEL=/abs/path/to.gguf`.
 
 fluister launches it co-resident with whisper on the GPU using
 `llama-server -m <model> --cpu-moe -ngl 99 -c 8192 -ctk q8_0 -ctv q8_0`
@@ -115,8 +113,10 @@ All optional, via environment variables:
 | `TRANSCRIBE_DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | pyannote pipeline |
 | `TRANSCRIBE_SPEAKER_THRESHOLD` | `0.45` | cosine similarity to match a known voice |
 | `TRANSCRIBE_MIN_SPEAKER_SECONDS` | `2.0` | ignore diarized speakers with less total speech (filters noise) |
-| `TRANSCRIBE_TIDY` | `true` | enable the readable LLM tidy pass (needs a model below) |
-| `TRANSCRIBE_LLM_MODEL` | — | GGUF path for the tidier; unset disables the Readable view |
+| `TRANSCRIBE_TIDY` | `true` | enable the readable LLM tidy pass |
+| `TRANSCRIBE_LLM_REPO` | `unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF` | HF repo for the tidier GGUF (cached like whisper) |
+| `TRANSCRIBE_LLM_FILE` | `Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf` | GGUF filename within that repo |
+| `TRANSCRIBE_LLM_MODEL` | — | optional local GGUF path; overrides repo/file |
 | `TRANSCRIBE_LLM_PORT` | `8080` | port fluister runs `llama-server` on |
 | `TRANSCRIBE_LLM_CTX` | `8192` | `llama-server` context size |
 | `TRANSCRIBE_LLM_HEALTH_TIMEOUT` | `120` | seconds to wait for `llama-server` `/health` |

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     diarized             INTEGER NOT NULL DEFAULT 0,
     speakers             TEXT,
     size                 INTEGER,
-    segments_json        TEXT
+    segments_json        TEXT,
+    tidied_json          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 
@@ -102,6 +103,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN speakers TEXT")
     if "segments_json" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN segments_json TEXT")
+    if "tidied_json" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN tidied_json TEXT")
     if "size" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN size INTEGER")
         # Backfill size from existing upload files so older jobs also dedupe.

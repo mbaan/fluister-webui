@@ -58,3 +58,65 @@ def group_turns(segments: Iterable, max_chars: int = 4000) -> list[Turn]:
         cur_len += (1 if cur_len else 0) + len(text)
     flush()
     return turns
+
+
+SYSTEM_PROMPT = (
+    "You clean up speech-to-text transcripts for readability. Add punctuation, "
+    "capitalization, and paragraph breaks. Remove filler words (uh, um, like, you "
+    "know) and false starts / repeated restarts. Do NOT change, add, remove (other "
+    "than fillers), reorder, translate, or 'correct' any meaningful word. Preserve "
+    "the original language(s) exactly, including Dutch-English code-switching. "
+    "Output only the cleaned text, nothing else."
+)
+
+
+def chat_completion(
+    base_url: str,
+    messages: list[dict],
+    *,
+    model: str = "local",
+    temperature: float = 0.1,
+    timeout: int = 120,
+) -> str:
+    """POST an OpenAI-style chat completion to llama-server; return the content.
+    Raises on transport/HTTP/parse errors (callers handle best-effort)."""
+    payload = json.dumps(
+        {"model": model, "messages": messages, "temperature": temperature, "stream": False}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/v1/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def tidy_turns(
+    turns: list[Turn],
+    base_url: str,
+    *,
+    model: str = "local",
+    temperature: float = 0.1,
+    timeout: int = 120,
+) -> list[dict]:
+    """Tidy each turn independently. On a per-turn failure, fall back to that
+    turn's raw text (degrade gracefully — never drop content). Returns a list of
+    ``{"speaker": str | None, "text": str}`` paragraphs."""
+    out: list[dict] = []
+    for turn in turns:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": turn.text},
+        ]
+        try:
+            text = chat_completion(
+                base_url, messages, model=model, temperature=temperature, timeout=timeout
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Tidy failed for a turn; keeping raw text", exc_info=True)
+            text = turn.text
+        out.append({"speaker": turn.speaker, "text": text})
+    return out

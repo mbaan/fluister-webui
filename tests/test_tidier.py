@@ -1,5 +1,6 @@
+import app.tidier as tidier_mod
 from app.models import Segment
-from app.tidier import Turn, group_turns
+from app.tidier import SYSTEM_PROMPT, Turn, group_turns, tidy_turns
 
 
 def _seg(text, speaker=None):
@@ -29,3 +30,32 @@ def test_long_turn_splits_at_segment_boundary():
     assert len(turns) == 3
     assert all(t.speaker == "Ann" for t in turns)
     assert [t.text for t in turns] == ["a" * 30, "b" * 30, "c" * 30]
+
+
+def test_tidy_turns_builds_prompt_and_parses(monkeypatch):
+    captured = []
+
+    def fake_chat(base_url, messages, *, model, temperature, timeout):
+        captured.append((base_url, messages, temperature, timeout))
+        return "Cleaned: " + messages[-1]["content"]
+
+    monkeypatch.setattr(tidier_mod, "chat_completion", fake_chat)
+    turns = [Turn("Ann", "um hello"), Turn(None, "like yeah")]
+    out = tidy_turns(turns, "http://x:8080", timeout=42)
+
+    assert out == [
+        {"speaker": "Ann", "text": "Cleaned: um hello"},
+        {"speaker": None, "text": "Cleaned: like yeah"},
+    ]
+    assert captured[0][1][0] == {"role": "system", "content": SYSTEM_PROMPT}
+    assert captured[0][1][1]["content"] == "um hello"
+    assert captured[0][3] == 42  # request timeout threaded through
+
+
+def test_tidy_turns_falls_back_to_raw_on_error(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("server down")
+
+    monkeypatch.setattr(tidier_mod, "chat_completion", boom)
+    out = tidy_turns([Turn(None, "raw text")], "http://x:8080", timeout=5)
+    assert out == [{"speaker": None, "text": "raw text"}]

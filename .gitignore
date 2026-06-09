@@ -11,6 +11,9 @@ __pycache__/
 # App data: uploads, converted audio, transcripts, sqlite db
 /data/
 
+# Local LLM weights for the tidy pass (GGUFs are large; keep out of git)
+/models/
+
 # Scratch / benchmarks
 /tmp/
 

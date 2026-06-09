@@ -73,6 +73,11 @@ class Settings:
 def load_settings() -> Settings:
     _load_dotenv(PROJECT_ROOT / ".env")
     data_dir = Path(os.environ.get("TRANSCRIBE_DATA_DIR", PROJECT_ROOT / "data"))
+    # Resolve a relative LLM model path against the project root so it works
+    # regardless of the launch directory (mirrors how data_dir is rooted).
+    _llm_model = os.environ.get("TRANSCRIBE_LLM_MODEL") or None
+    if _llm_model and not os.path.isabs(_llm_model):
+        _llm_model = str(PROJECT_ROOT / _llm_model)
     settings = Settings(
         host=os.environ.get("TRANSCRIBE_HOST", "127.0.0.1"),
         port=int(os.environ.get("TRANSCRIBE_PORT", "8000")),
@@ -94,7 +99,7 @@ def load_settings() -> Settings:
         min_speaker_seconds=float(os.environ.get("TRANSCRIBE_MIN_SPEAKER_SECONDS", "2.0")),
         hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
         tidy_enabled=_env_bool("TRANSCRIBE_TIDY", True),
-        llm_model=os.environ.get("TRANSCRIBE_LLM_MODEL") or None,
+        llm_model=_llm_model,
         llm_port=int(os.environ.get("TRANSCRIBE_LLM_PORT", "8080")),
         llm_ctx=int(os.environ.get("TRANSCRIBE_LLM_CTX", "8192")),
         llm_health_timeout=int(os.environ.get("TRANSCRIBE_LLM_HEALTH_TIMEOUT", "120")),

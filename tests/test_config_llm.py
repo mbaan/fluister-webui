@@ -1,5 +1,7 @@
 """LLM tidy settings parse from env with sane defaults."""
-from app.config import load_settings
+import os
+
+from app.config import PROJECT_ROOT, load_settings
 
 
 def test_llm_defaults(monkeypatch, tmp_path):
@@ -32,3 +34,18 @@ def test_llm_from_env(monkeypatch, tmp_path):
     assert s.llm_ctx == 4096
     assert s.llm_health_timeout == 30
     assert s.llm_request_timeout == 45
+
+
+def test_llm_model_relative_path_rooted_at_project(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIBE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TRANSCRIBE_LLM_MODEL", "models/foo.gguf")
+    s = load_settings()
+    assert s.llm_model == str(PROJECT_ROOT / "models" / "foo.gguf")
+    assert os.path.isabs(s.llm_model)
+
+
+def test_llm_model_absolute_path_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIBE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TRANSCRIBE_LLM_MODEL", "/srv/models/foo.gguf")
+    s = load_settings()
+    assert s.llm_model == "/srv/models/foo.gguf"

@@ -64,11 +64,18 @@ To add speakers to files transcribed earlier, use **Re-diarize**
 A best-effort post-pass cleans each transcript into a **Readable** view
 (punctuation, paragraphs, "uhm" removal). It runs a local
 [`llama-server`](https://github.com/ggml-org/llama.cpp) that **fluister starts
-and stops itself** — set `TRANSCRIBE_LLM_MODEL` to a GGUF to enable it:
+and stops itself** — set `TRANSCRIBE_LLM_MODEL` to a GGUF to enable it.
+
+Recommended model: **Qwen3-30B-A3B-Instruct-2507** (Q4_K_M, ~18.6 GB) — a
+non-thinking MoE that fits alongside whisper via `--cpu-moe`. Download it into
+`models/` (gitignored):
 
 ```bash
-# in .env
-TRANSCRIBE_LLM_MODEL=/path/to/Qwen3-30B-A3B-Q4_K_M.gguf
+uv run hf download unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF \
+  Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --local-dir models
+
+# then in .env
+TRANSCRIBE_LLM_MODEL=models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 ```
 
 fluister launches it co-resident with whisper on the GPU using

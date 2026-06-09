@@ -14,6 +14,7 @@
     queued: "Queued",
     converting: "Converting",
     transcribing: "Transcribing",
+    tidying: "Polishing…",
     done: "Done",
     error: "Error",
     interrupted: "Interrupted",
@@ -473,7 +474,10 @@
       const cached = jobJson.get(job.id);
       diarSig = cached ? `1:${cached.sig}` : "0";
     }
-    return `${status}|${job.error || ""}|${len}|${diarSig}`;
+    // Include the tidied length so the readable view appears once it lands, even
+    // when updates arrive via polling rather than the live SSE `done` event.
+    const tidyLen = (job.tidied_json || "").length;
+    return `${status}|${job.error || ""}|${len}|${diarSig}|${tidyLen}`;
   }
 
   // Length of a job's current plain transcript — the key the JSON cache is
@@ -560,23 +564,39 @@
       const cached = jobJson.get(job.id);
       const data = cached ? cached.data : null;
       const hasSegments = data && Array.isArray(data.segments) && data.segments.length > 0;
-      let t;
+      let rawNode;
       if (data && hasSpeakers(data)) {
-        t = buildDiarizedTranscript(data);
+        rawNode = buildDiarizedTranscript(data);
       } else if (hasSegments) {
-        t = buildWordTranscript(data);
+        rawNode = buildWordTranscript(data);
       } else {
         const text = job.transcript_text || "";
-        t = el("div", { class: "transcript" });
-        if (text.trim()) t.textContent = text;
-        else t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
+        rawNode = el("div", { class: "transcript" });
+        if (text.trim()) rawNode.textContent = text;
+        else rawNode.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
       }
-      body.appendChild(t);
       // Cache this card's word spans for click-to-seek + live highlight, then
-      // wire clicks and append the player bar below the transcript.
-      cacheWordSpans(u, t);
-      wireWordClicks(card, job.id, t);
-      body.appendChild(buildPlayerBar(card, job.id, u));
+      // wire clicks; the player bar lives with the raw transcript.
+      cacheWordSpans(u, rawNode);
+      wireWordClicks(card, job.id, rawNode);
+      const player = buildPlayerBar(card, job.id, u);
+
+      // When a readable (LLM-tidied) version exists, show it by default behind a
+      // Raw/Readable toggle; raw stays the source of truth (and keeps click-to-play).
+      const tidied = parseTidied(job);
+      if (tidied) {
+        const readableNode = buildReadableTranscript(tidied);
+        const rawGroup = el("div", { class: "raw-group" });
+        rawGroup.appendChild(rawNode);
+        rawGroup.appendChild(player);
+        rawGroup.hidden = true;
+        body.appendChild(buildViewToggle(readableNode, rawGroup));
+        body.appendChild(readableNode);
+        body.appendChild(rawGroup);
+      } else {
+        body.appendChild(rawNode);
+        body.appendChild(player);
+      }
       body.appendChild(buildActions(job));
     } else if (u.streaming || ACTIVE.has(status)) {
       const t = el("div", { class: "transcript", dataset: { live: "1" } });
@@ -689,6 +709,69 @@
       t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
     }
     return t;
+  }
+
+  // Parse a job's stored readable paragraphs. Returns [{speaker, text}] or null.
+  function parseTidied(job) {
+    if (!job || !job.tidied_json) return null;
+    try {
+      const arr = JSON.parse(job.tidied_json);
+      return Array.isArray(arr) && arr.length ? arr : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Render the LLM-tidied transcript: speaker-labeled blocks of paragraphs, no
+  // per-word timestamps / click-to-play (the raw view owns that). Consecutive
+  // same-speaker entries share one name chip.
+  function buildReadableTranscript(tidied) {
+    const t = el("div", { class: "transcript transcript--readable" });
+    let lastKey = null;
+    let block = null;
+    for (const item of tidied) {
+      if (!item || typeof item.text !== "string") continue;
+      const name = item.speaker || null;
+      const key = name || "__none";
+      if (key !== lastKey) {
+        block = el("div", { class: "turn" });
+        if (name) {
+          const chip = el("span", { class: "chip", text: name });
+          chip.style.setProperty("--chip-h", String(hueFor(key)));
+          block.appendChild(chip);
+        }
+        block.appendChild(el("div", { class: "turn__text" }));
+        t.appendChild(block);
+        lastKey = key;
+      }
+      const textNode = block.lastChild;
+      for (const para of item.text.split(/\n{2,}|\n/)) {
+        const p = para.trim();
+        if (p) textNode.appendChild(el("p", { class: "para", text: p }));
+      }
+    }
+    if (!t.children.length) {
+      t.appendChild(el("span", { class: "placeholder", text: "(empty transcript)" }));
+    }
+    return t;
+  }
+
+  // Two-button toggle that shows exactly one of [readableNode, rawGroup].
+  function buildViewToggle(readableNode, rawGroup) {
+    const bar = el("div", { class: "view-toggle" });
+    const rBtn = el("button", { class: "view-toggle__btn is-active", text: "Readable" });
+    const wBtn = el("button", { class: "view-toggle__btn", text: "Raw" });
+    const show = (readable) => {
+      readableNode.hidden = !readable;
+      rawGroup.hidden = readable;
+      rBtn.classList.toggle("is-active", readable);
+      wBtn.classList.toggle("is-active", !readable);
+    };
+    rBtn.addEventListener("click", () => show(true));
+    wBtn.addEventListener("click", () => show(false));
+    bar.appendChild(rBtn);
+    bar.appendChild(wBtn);
+    return bar;
   }
 
   // ── Audio playback + player bar ───────────────────────────────────────
@@ -1189,6 +1272,14 @@
         u.segs.push(txt);
         appendSegment(id, txt, isFirst);
       }
+    });
+
+    es.addEventListener("tidied", (e) => {
+      const data = parseEvent(e);
+      if (!data || !Array.isArray(data.tidied)) return;
+      const cur = jobs.get(id);
+      if (cur) cur.tidied_json = JSON.stringify(data.tidied);
+      // The subsequent `done` event re-renders with the readable view.
     });
 
     es.addEventListener("done", (e) => {

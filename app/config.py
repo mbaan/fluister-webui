@@ -61,6 +61,13 @@ class Settings:
     speaker_threshold: float
     min_speaker_seconds: float
     hf_token: str | None
+    # LLM tidy / readability post-pass
+    tidy_enabled: bool
+    llm_model: str | None
+    llm_port: int
+    llm_ctx: int
+    llm_health_timeout: int
+    llm_request_timeout: int
 
 
 def load_settings() -> Settings:
@@ -86,6 +93,12 @@ def load_settings() -> Settings:
         speaker_threshold=float(os.environ.get("TRANSCRIBE_SPEAKER_THRESHOLD", "0.45")),
         min_speaker_seconds=float(os.environ.get("TRANSCRIBE_MIN_SPEAKER_SECONDS", "2.0")),
         hf_token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN"),
+        tidy_enabled=_env_bool("TRANSCRIBE_TIDY", True),
+        llm_model=os.environ.get("TRANSCRIBE_LLM_MODEL") or None,
+        llm_port=int(os.environ.get("TRANSCRIBE_LLM_PORT", "8080")),
+        llm_ctx=int(os.environ.get("TRANSCRIBE_LLM_CTX", "8192")),
+        llm_health_timeout=int(os.environ.get("TRANSCRIBE_LLM_HEALTH_TIMEOUT", "120")),
+        llm_request_timeout=int(os.environ.get("TRANSCRIBE_LLM_REQUEST_TIMEOUT", "120")),
     )
     return settings
 

@@ -61,12 +61,14 @@ def group_turns(segments: Iterable, max_chars: int = 4000) -> list[Turn]:
 
 
 SYSTEM_PROMPT = (
-    "You clean up speech-to-text transcripts for readability. Add punctuation, "
-    "capitalization, and paragraph breaks. Remove filler words (uh, um, like, you "
-    "know) and false starts / repeated restarts. Do NOT change, add, remove (other "
-    "than fillers), reorder, translate, or 'correct' any meaningful word. Preserve "
-    "the original language(s) exactly, including Dutch-English code-switching. "
-    "Output only the cleaned text, nothing else."
+    "You clean up speech-to-text transcripts for readability. Add punctuation and "
+    "capitalization, and break the text into paragraphs only at clear shifts in "
+    "topic — group related sentences together and avoid one- or two-sentence "
+    "paragraphs. Remove filler words (uh, um, like, you know) and false starts / "
+    "repeated restarts. Do NOT change, add, remove (other than fillers), reorder, "
+    "translate, or 'correct' any meaningful word. Preserve the original language(s) "
+    "exactly, including Dutch-English code-switching. Output only the cleaned text, "
+    "nothing else."
 )
 
 

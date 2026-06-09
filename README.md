@@ -103,7 +103,7 @@ All optional, via environment variables:
 | `TRANSCRIBE_MODEL` | `large-v3` | faster-whisper model |
 | `TRANSCRIBE_DEVICE` | `auto` | `auto` / `cuda` / `cpu` |
 | `TRANSCRIBE_COMPUTE_TYPE` | `auto` | `auto` / `float16` / `int8` / … |
-| `TRANSCRIBE_BATCH_SIZE` | `8` | batched-inference batch size |
+| `TRANSCRIBE_BATCH_SIZE` | `2` | batched-inference batch size (kept low so whisper fits next to the co-resident tidy LLM; raise it if `TRANSCRIBE_TIDY=false`) |
 | `TRANSCRIBE_LANGUAGE` | `auto` | default language (`auto` / `nl` / `en`) |
 | `TRANSCRIBE_VAD` | `true` | Silero voice-activity filtering |
 | `TRANSCRIBE_HOST` / `TRANSCRIBE_PORT` | `127.0.0.1` / `8000` | bind address |

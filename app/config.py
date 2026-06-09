@@ -89,7 +89,7 @@ def load_settings() -> Settings:
         model_name=os.environ.get("TRANSCRIBE_MODEL", "large-v3"),
         device=os.environ.get("TRANSCRIBE_DEVICE", "auto"),
         compute_type=os.environ.get("TRANSCRIBE_COMPUTE_TYPE", "auto"),
-        batch_size=int(os.environ.get("TRANSCRIBE_BATCH_SIZE", "8")),
+        batch_size=int(os.environ.get("TRANSCRIBE_BATCH_SIZE", "2")),
         use_vad=_env_bool("TRANSCRIBE_VAD", True),
         default_language=os.environ.get("TRANSCRIBE_LANGUAGE", "auto"),
         max_upload_mb=int(os.environ.get("TRANSCRIBE_MAX_UPLOAD_MB", "2048")),

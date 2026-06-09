@@ -57,7 +57,9 @@ def _apply_person_change_to_jobs(
     """Propagate a person rename / merge / delete into stored job transcripts so
     speaker labels stay correct. Rename: update name. Merge: repoint to the
     merged person. Delete: drop the label (speaker -> None)."""
-    for job in db.list_jobs(settings.db_path):
+    # Scan every job (limit=-1), not just the most recent page — a rename/merge
+    # must reach older transcripts too.
+    for job in db.list_jobs(settings.db_path, limit=-1):
         speakers = json.loads(job["speakers"]) if job.get("speakers") else None
         segs = json.loads(job["segments_json"]) if job.get("segments_json") else None
         changed = False
@@ -98,7 +100,7 @@ def _scrub_orphan_speakers() -> None:
     """Drop speaker labels in jobs that point at persons which no longer exist
     (e.g. a person deleted before this propagation existed). Self-healing."""
     valid = {p["id"] for p in db.list_persons(settings.db_path)}
-    for job in db.list_jobs(settings.db_path):
+    for job in db.list_jobs(settings.db_path, limit=-1):  # every job, not just the latest page
         speakers = json.loads(job["speakers"]) if job.get("speakers") else None
         segs = json.loads(job["segments_json"]) if job.get("segments_json") else None
         changed = False
@@ -175,8 +177,20 @@ async def create_jobs(
         ext = Path(original).suffix
         stored = settings.uploads_dir / f"{job_id}{ext}"
 
+        # Stream to disk, enforcing the configured size cap so a single huge
+        # upload can't fill the disk.
+        max_bytes = settings.max_upload_mb * 1024 * 1024
+        written = 0
         with stored.open("wb") as out:
             while chunk := await f.read(1024 * 1024):
+                written += len(chunk)
+                if written > max_bytes:
+                    out.close()
+                    stored.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"“{original}” exceeds the {settings.max_upload_mb} MB upload limit",
+                    )
                 out.write(chunk)
         size = stored.stat().st_size
 
@@ -363,6 +377,10 @@ async def rediarize(job_id: str, request: Request):
     db.update_job(
         settings.db_path, job_id, status=db.STATUS_QUEUED, error=None, progress=0.0,
         diarized=0, speakers=None, transcript_text=None, detected_language=None,
+        # Clear the previous run's structured + readable transcripts too, so a
+        # rerun that produces no tidy pass (LLM down) can't keep serving a stale
+        # readable view mismatched with the freshly re-diarized segments.
+        segments_json=None, tidied_json=None,
         started_at=None, finished_at=None,
     )
     await _queue(request).enqueue(job_id)

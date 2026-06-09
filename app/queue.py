@@ -207,7 +207,16 @@ class JobQueue:
             })
 
             # 2. Transcribe, streaming segments to subscribers.
+            # Progress is monotonic within a transcription pass; a drop means the
+            # OOM fallback restarted from the top, so tell the client to discard
+            # the partial segments it already received (otherwise they duplicate).
+            stream = {"last": 0.0, "persisted": 0.0}
+
             def on_segment(seg, progress) -> None:
+                if progress + 1e-6 < stream["last"]:
+                    self.publish_threadsafe(job_id, "reset", {})
+                    stream["persisted"] = 0.0
+                stream["last"] = progress
                 self.publish_threadsafe(job_id, "segment", {
                     "start": seg.start, "end": seg.end, "text": seg.text,
                 })
@@ -215,7 +224,13 @@ class JobQueue:
                     "status": db.STATUS_TRANSCRIBING, "progress": progress,
                     "detected_language": None,
                 })
-                db.update_job(db_path, job_id, progress=progress)
+                # Persist progress sparingly: it only feeds the polling progress
+                # bar (live clients get it over SSE), so a write per decoded
+                # segment is needless DB churn on a long file. A >=1% step keeps
+                # the polled bar fresh enough (poll interval is seconds).
+                if progress - stream["persisted"] >= 0.01:
+                    stream["persisted"] = progress
+                    db.update_job(db_path, job_id, progress=progress)
 
             language = job.get("language") or "auto"
             # Bias the decoder toward known names/keywords (union across the

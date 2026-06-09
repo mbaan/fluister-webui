@@ -1274,6 +1274,19 @@
       }
     });
 
+    es.addEventListener("reset", () => {
+      // The transcriber restarted (OOM fallback). Drop the partial segments
+      // already streamed so the re-run's segments don't pile on top of them.
+      u.segs = [];
+      u.liveProgress = 0;
+      const card = jobList.querySelector(`[data-id="${cssEscape(id)}"]`);
+      const t = card && card.querySelector('.transcript[data-live="1"]');
+      if (t) {
+        Array.from(t.querySelectorAll(".seg")).forEach((n) => n.remove());
+      }
+      refreshLive(id);
+    });
+
     es.addEventListener("tidied", (e) => {
       const data = parseEvent(e);
       if (!data || !Array.isArray(data.tidied)) return;

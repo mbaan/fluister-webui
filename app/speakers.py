@@ -141,9 +141,15 @@ class Gallery:
             self.add_sample(best_id, emb, job_id=job_id)
             return best_id, False
 
-        # Create new person
-        all_persons = db.list_persons(self.db_path)
-        name = f"Person {len(all_persons) + 1}"
+        # Create a new person, numbering it past the highest existing
+        # "Person N" so deleting one in the middle can't mint a duplicate label.
+        existing = db.list_persons(self.db_path)
+        used_nums: list[int] = []
+        for p in existing:
+            nm = (p.get("name") or "").strip()
+            if _PLACEHOLDER_NAME.match(nm):
+                used_nums.append(int(nm.split()[1]))
+        name = f"Person {max(used_nums) + 1 if used_nums else 1}"
         new_id = uuid.uuid4().hex
         db.create_person(
             self.db_path,

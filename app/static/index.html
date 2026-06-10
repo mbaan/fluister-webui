@@ -38,7 +38,12 @@
       <section class="uploader" aria-label="Upload audio or video">
         <div class="dropzone" id="dropzone" tabindex="0" role="button"
              aria-label="Drop files here or click to choose">
-          <input type="file" id="fileInput" accept="audio/*,video/*" multiple hidden>
+          <!-- Explicit extensions next to the wildcards: Linux file pickers map
+               audio/* through the system MIME db, which misses .aac (and friends),
+               greying them out in the browse dialog. Extensions match literally. -->
+          <input type="file" id="fileInput"
+                 accept="audio/*,video/*,.aac,.m4a,.mp3,.ogg,.oga,.opus,.wav,.flac,.wma,.amr,.3gp,.mp4,.mov,.mkv,.webm"
+                 multiple hidden>
           <div class="dropzone__inner">
             <span class="dropzone__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">

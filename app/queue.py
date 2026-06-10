@@ -246,34 +246,41 @@ class JobQueue:
                 self._diarize_and_identify, job_id, wav_path, segments, words
             )
 
-            # 3. Persist results (segments + speakers stored in the DB). Mark DONE
-            # now so a restart can never strand the job mid-tidy.
+            # 3. Persist results (segments + speakers stored in the DB) before the
+            # tidy pass, so an interruption mid-tidy can never lose the transcript
+            # (startup recovery flips a stranded TIDYING job back to DONE). The
+            # TIDYING status is persisted so polling clients see the readable view
+            # being prepared instead of a silent DONE; progress restarts at 0 and
+            # climbs per tidied turn.
+            will_tidy = self.llm_server is not None and self.llm_server.available
             segments_payload = assign.attach_words_to_segments(segments, words)
             transcript_text = "\n".join(s.text for s in segments if s.text)
             db.update_job(
-                db_path, job_id, status=db.STATUS_DONE,
+                db_path, job_id,
+                status=db.STATUS_TIDYING if will_tidy else db.STATUS_DONE,
                 detected_language=info.language, duration=info.duration,
-                progress=1.0, transcript_text=transcript_text,
+                progress=0.0 if will_tidy else 1.0,
+                transcript_text=transcript_text,
                 segments_json=json.dumps(segments_payload, ensure_ascii=False),
                 diarized=1 if diarized else 0,
                 speakers=json.dumps(speakers_map) if speakers_map else None,
                 finished_at=db.now_iso(),
             )
 
-            # 4. Best-effort readable tidy. The job is already DONE; we only delay
-            # the *live* `done` event so a watching client keeps its stream open
+            # 4. Best-effort readable tidy. The transcript is already safe; the
+            # `done` event is delayed so a watching client keeps its stream open
             # until the readable view arrives.
-            if self.llm_server is not None and self.llm_server.available:
+            if will_tidy:
                 self.publish(job_id, "status", {
-                    "status": "tidying", "progress": 1.0,
+                    "status": db.STATUS_TIDYING, "progress": 0.0,
                     "detected_language": info.language,
                 })
                 tidied = await asyncio.to_thread(self._maybe_tidy, job_id, segments)
+                fields: dict[str, Any] = {"status": db.STATUS_DONE, "progress": 1.0}
                 if tidied is not None:
-                    db.update_job(
-                        db_path, job_id,
-                        tidied_json=json.dumps(tidied, ensure_ascii=False),
-                    )
+                    fields["tidied_json"] = json.dumps(tidied, ensure_ascii=False)
+                db.update_job(db_path, job_id, **fields)
+                if tidied is not None:
                     self.publish(job_id, "tidied", {"tidied": tidied})
 
             self.publish(job_id, "done", db.get_job(db_path, job_id))
@@ -287,15 +294,29 @@ class JobQueue:
             self.publish(job_id, "error", {"message": str(exc)})
 
     def _maybe_tidy(self, job_id: str, segments) -> list[dict] | None:
-        """Best-effort readable tidy. Returns paragraphs or None (LLM down / error)."""
+        """Best-effort readable tidy. Returns paragraphs or None (LLM down / error).
+        Runs in a worker thread; per-turn progress goes to SSE subscribers and to
+        the DB row (for polling clients)."""
         if not (self.llm_server is not None and self.llm_server.available):
             return None
         try:
             turns = group_turns(segments)
             if not turns:
                 return None
+
+            def on_progress(done: int, total: int) -> None:
+                progress = done / total
+                self.publish_threadsafe(job_id, "status", {
+                    "status": db.STATUS_TIDYING, "progress": progress,
+                    "detected_language": None,
+                })
+                # One DB write per turn is cheap next to the LLM call behind it.
+                db.update_job(self.settings.db_path, job_id, progress=progress)
+
             return tidy_turns(
-                turns, self.llm_server.base_url, timeout=self.settings.llm_request_timeout
+                turns, self.llm_server.base_url,
+                timeout=self.settings.llm_request_timeout,
+                on_progress=on_progress,
             )
         except Exception:  # noqa: BLE001
             logger.exception("Tidy pass failed for job %s", job_id)

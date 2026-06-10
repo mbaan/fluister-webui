@@ -16,11 +16,15 @@ from typing import Any
 STATUS_QUEUED = "queued"
 STATUS_CONVERTING = "converting"
 STATUS_TRANSCRIBING = "transcribing"
+STATUS_TIDYING = "tidying"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
 STATUS_INTERRUPTED = "interrupted"
 
-# Statuses considered "in flight" (used to recover after a restart).
+# Statuses considered "in flight" (used to recover after a restart). TIDYING is
+# deliberately absent: a job interrupted mid-tidy has its full transcript
+# persisted already, so recovery completes it as DONE instead (see
+# mark_interrupted) rather than flagging it as a failure.
 ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_CONVERTING, STATUS_TRANSCRIBING)
 
 _SCHEMA = """
@@ -183,7 +187,10 @@ def find_duplicate(
 ) -> dict[str, Any] | None:
     """Return an existing non-failed job with the same filename + size, if any
     (used to skip re-transcribing a file that was already uploaded)."""
-    statuses = (STATUS_QUEUED, STATUS_CONVERTING, STATUS_TRANSCRIBING, STATUS_DONE)
+    statuses = (
+        STATUS_QUEUED, STATUS_CONVERTING, STATUS_TRANSCRIBING,
+        STATUS_TIDYING, STATUS_DONE,
+    )
     placeholders = ", ".join("?" for _ in statuses)
     with _connect(db_path) as conn:
         row = conn.execute(
@@ -203,9 +210,17 @@ def clear_jobs(db_path: Path) -> int:
 
 def mark_interrupted(db_path: Path) -> list[str]:
     """Flag any jobs still 'in flight' from a previous run as interrupted.
-    Returns the affected job ids."""
+    Returns the affected job ids.
+
+    Jobs caught mid-tidy are completed as DONE instead: their transcript was
+    fully persisted before the tidy pass started, only the optional readable
+    view is missing."""
     placeholders = ", ".join("?" for _ in ACTIVE_STATUSES)
     with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET status = ?, progress = 1.0 WHERE status = ?",
+            (STATUS_DONE, STATUS_TIDYING),
+        )
         cur = conn.execute(
             f"SELECT id FROM jobs WHERE status IN ({placeholders})", ACTIVE_STATUSES
         )

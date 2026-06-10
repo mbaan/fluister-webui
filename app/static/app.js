@@ -9,7 +9,9 @@
   const API = "/api/jobs";
   const PERSONS_API = "/api/persons";
   const POLL_MS = 3000;
-  const ACTIVE = new Set(["queued", "converting", "transcribing"]);
+  // "tidying" is active too: the SSE stream must stay open through the readable
+  // (LLM) pass or the tidied/done events are never received.
+  const ACTIVE = new Set(["queued", "converting", "transcribing", "tidying"]);
   const STATUS_LABEL = {
     queued: "Queued",
     converting: "Converting",
@@ -397,7 +399,8 @@
     const prog = card.querySelector(".progress");
     const bar = prog.querySelector(".progress__bar");
     const isActive = ACTIVE.has(status);
-    const showBar = status === "converting" || status === "transcribing";
+    const showBar =
+      status === "converting" || status === "transcribing" || status === "tidying";
     prog.hidden = !showBar;
     if (showBar) {
       const pct = Math.max(0, Math.min(1, progress)) * 100;
@@ -434,6 +437,10 @@
           refreshBodyHeader(card, job, u);
         }
       }
+      // After the body settles, reflect the readable (LLM) pass in it. Synced
+      // here rather than in renderBody so the live-streaming path (which never
+      // re-renders the body) gets the note too when tidying starts.
+      syncTidyNote(body, status);
     }
 
     // Manage SSE lifecycle.
@@ -524,6 +531,23 @@
     return data.segments.some((s) => s && s.speaker != null);
   }
 
+  // Show/remove the "polishing" note at the end of the card body. Idempotent
+  // and cheap, so updateCard can call it on every pass (including the
+  // live-streaming path, which never rebuilds the body).
+  function syncTidyNote(body, status) {
+    const existing = body.querySelector(".tidy-note");
+    if (status === "tidying") {
+      if (!existing) {
+        body.appendChild(el("div", { class: "tidy-note" }, [
+          el("span", { class: "pip" }),
+          "Polishing into a readable view…",
+        ]));
+      }
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
   // Update only the stat line in place (used during live streaming so the
   // transcript area and its scroll position are left untouched).
   function refreshBodyHeader(card, job, u) {
@@ -600,9 +624,15 @@
       body.appendChild(buildActions(job));
     } else if (u.streaming || ACTIVE.has(status)) {
       const t = el("div", { class: "transcript", dataset: { live: "1" } });
-      u.segs.forEach((s, i) => {
-        t.appendChild(el("span", { class: "seg", text: (i > 0 ? " " : "") + s }));
-      });
+      if (!u.segs.length && job.transcript_text) {
+        // No streamed segments (e.g. page opened mid-tidy) but the transcript
+        // is already stored — show it instead of an empty waiting area.
+        t.appendChild(el("span", { class: "seg", text: job.transcript_text }));
+      } else {
+        u.segs.forEach((s, i) => {
+          t.appendChild(el("span", { class: "seg", text: (i > 0 ? " " : "") + s }));
+        });
+      }
       t.appendChild(el("span", { class: "caret", "aria-hidden": "true" }));
       body.appendChild(t);
     } else if (status === "error" || status === "interrupted") {

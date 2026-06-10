@@ -14,7 +14,7 @@ import json
 import logging
 import urllib.request
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +103,18 @@ def tidy_turns(
     model: str = "local",
     temperature: float = 0.1,
     timeout: int = 120,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
     """Tidy each turn independently. On a per-turn failure, fall back to that
     turn's raw text (degrade gracefully — never drop content). Returns a list of
-    ``{"speaker": str | None, "text": str}`` paragraphs."""
+    ``{"speaker": str | None, "text": str}`` paragraphs.
+
+    ``on_progress(done, total)`` is called after each turn so callers can
+    surface progress; callback errors are swallowed — progress reporting must
+    never cost us the tidied text."""
     out: list[dict] = []
-    for turn in turns:
+    total = len(turns)
+    for i, turn in enumerate(turns, start=1):
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": turn.text},
@@ -121,4 +127,9 @@ def tidy_turns(
             logger.warning("Tidy failed for a turn; keeping raw text", exc_info=True)
             text = turn.text
         out.append({"speaker": turn.speaker, "text": text})
+        if on_progress is not None:
+            try:
+                on_progress(i, total)
+            except Exception:  # noqa: BLE001
+                logger.debug("Tidy progress callback failed", exc_info=True)
     return out

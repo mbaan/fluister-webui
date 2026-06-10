@@ -41,6 +41,7 @@
   --st-converting: #d8a64a;
   --st-transcribing: #5eb8ff;
   --st-done: #4fcf8a;
+  --st-tidying: #ffa3c2;
   --st-error: #ff7a7a;
   --st-interrupted: #c98bff;
 
@@ -411,13 +412,15 @@ select:focus-visible { border-color: var(--accent); outline: none; }
 .badge--queued      { color: var(--st-queued);      background: color-mix(in srgb, var(--st-queued) 14%, transparent);      border-color: color-mix(in srgb, var(--st-queued) 34%, transparent); }
 .badge--converting  { color: var(--st-converting);  background: color-mix(in srgb, var(--st-converting) 14%, transparent);  border-color: color-mix(in srgb, var(--st-converting) 34%, transparent); }
 .badge--transcribing{ color: var(--st-transcribing);background: color-mix(in srgb, var(--st-transcribing) 14%, transparent);border-color: color-mix(in srgb, var(--st-transcribing) 34%, transparent); }
+.badge--tidying     { color: var(--st-tidying);     background: color-mix(in srgb, var(--st-tidying) 14%, transparent);     border-color: color-mix(in srgb, var(--st-tidying) 34%, transparent); }
 .badge--done        { color: var(--st-done);        background: color-mix(in srgb, var(--st-done) 14%, transparent);        border-color: color-mix(in srgb, var(--st-done) 34%, transparent); }
 .badge--error       { color: var(--st-error);       background: color-mix(in srgb, var(--st-error) 14%, transparent);       border-color: color-mix(in srgb, var(--st-error) 34%, transparent); }
 .badge--interrupted { color: var(--st-interrupted); background: color-mix(in srgb, var(--st-interrupted) 14%, transparent); border-color: color-mix(in srgb, var(--st-interrupted) 34%, transparent); }
 
 /* active badges get a pulsing pip */
 .badge--converting .pip,
-.badge--transcribing .pip {
+.badge--transcribing .pip,
+.badge--tidying .pip {
   animation: pulse 1.3s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -536,6 +539,22 @@ select:focus-visible { border-color: var(--accent); outline: none; }
   color: var(--text-faint);
   font-size: 13px;
   padding: 4px 0;
+}
+
+/* "Polishing into a readable view…" note shown while the LLM tidy pass runs */
+.tidy-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.tidy-note .pip {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--st-tidying);
+  flex: none;
+  animation: pulse 1.3s ease-in-out infinite;
 }
 
 /* ── Speaker-coloured transcript ─────────────────────── */

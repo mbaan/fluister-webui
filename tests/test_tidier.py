@@ -59,3 +59,21 @@ def test_tidy_turns_falls_back_to_raw_on_error(monkeypatch):
     monkeypatch.setattr(tidier_mod, "chat_completion", boom)
     out = tidy_turns([Turn(None, "raw text")], "http://x:8080", timeout=5)
     assert out == [{"speaker": None, "text": "raw text"}]
+
+
+def test_tidy_turns_reports_progress_per_turn(monkeypatch):
+    monkeypatch.setattr(tidier_mod, "chat_completion", lambda *a, **k: "ok")
+    calls = []
+    turns = [Turn("Ann", "a"), Turn("Bob", "b"), Turn("Ann", "c")]
+    tidy_turns(turns, "http://x:8080", on_progress=lambda done, total: calls.append((done, total)))
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_tidy_turns_survives_progress_callback_error(monkeypatch):
+    monkeypatch.setattr(tidier_mod, "chat_completion", lambda *a, **k: "ok")
+
+    def bad_progress(done, total):
+        raise RuntimeError("loop closed")
+
+    out = tidy_turns([Turn(None, "a"), Turn(None, "b")], "http://x:8080", on_progress=bad_progress)
+    assert out == [{"speaker": None, "text": "ok"}, {"speaker": None, "text": "ok"}]

@@ -13,6 +13,7 @@ __pycache__/
 
 # Scratch / benchmarks
 /tmp/
+.superpowers/
 
 # Secrets (.env.example IS committed)
 .env

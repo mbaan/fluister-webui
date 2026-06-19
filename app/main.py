@@ -142,6 +142,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="fluister", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def _no_cache_static(request: Request, call_next):
+    """Tell the browser to revalidate the UI assets every load. Combined with
+    StaticFiles' ETag/Last-Modified, an unchanged file still 304s, but an edited
+    one is fetched fresh — so a normal reload shows UI changes without a manual
+    hard-refresh. (This is a local single-user tool; freshness beats caching.)"""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _queue(request: Request) -> JobQueue:
     return request.app.state.queue
 

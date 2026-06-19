@@ -3,33 +3,31 @@
 /* The halftone dot-matrix soundwave that crowns the app.
  *
  * Fully procedural (no image): a continuous 1-D signal — gated, spiky value
- * noise, reseeded every page load so the pattern is fresh each visit — scrolls
- * right→left (like a player) through a center-weighted envelope, dithered into
- * dots whose
- * size/opacity fall off from the centre line. So it reads like a real waveform
- * flowing through the matrix, not a fixed shape wobbling in place.
+ * noise, reseeded every page load so the pattern is fresh each visit — dithered
+ * into dots whose size/opacity fall off from the centre line, under a
+ * center-weighted envelope so it reads as a hero "portrait".
  *
- * Hue is swept across the width from the active theme; dot lightness adapts to
- * light/dark. The flow runs continuously, a touch livelier while a job works.
- * Honors prefers-reduced-motion (one static — but still randomly-seeded — frame).
+ * It sits STILL by default (a pretty, fully-formed waveform). It only scrolls —
+ * right→left, like a player — while a job is actually working (converting /
+ * transcribing / polishing), then freezes again when idle. Hue follows the
+ * active theme; lightness adapts to light/dark. Honors prefers-reduced-motion
+ * (never scrolls; one static, still randomly-seeded frame).
  */
 import { ACCENTS, DEFAULT_ACCENT, resolveMode } from "./palette.js";
 
 const canvas = document.getElementById("waveCanvas");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-const REST = 0.6;     // idle signal strength
-const ACTIVE = 1.0;   // signal strength while a job is transcribing
-const SPAN_U = 9;     // signal units visible across the width (≈ how many features)
-const SCROLL = 1.3;   // signal units travelled per second
+const SPAN_U = 13;    // signal units visible across the width — higher = denser
+const SCROLL = 0.75;  // signal units travelled per second while working (calm pace)
 
 const seed = Math.random() * 1000;  // fresh waveform shape on every page load
 
 let raf = null;
-let t = 0;            // accumulated seconds of travel
+let scroll = 0;       // current travel offset (frozen unless a job is working)
 let last = 0;
-let intensity = REST;
-let target = REST;
+let active = false;   // is a job working right now?
+let glow = 0;         // eased 0→1 brightness lift while working
 let cw = 0, ch = 0;
 let resizeTimer = null;
 
@@ -45,7 +43,7 @@ function vnoise(u) {
 function signal(u) {
   // Slow "activity" gate → carves quiet gaps between bursts.
   let env = vnoise(u * 0.5 + 1.7);
-  env = env < 0.42 ? 0 : (env - 0.42) / 0.58;
+  env = env < 0.40 ? 0 : (env - 0.40) / 0.60;
   env = env * env * (3 - 2 * env);                     // smooth the gate edges
   // Spiky multi-octave detail → tall peaks with small ripples between.
   let d = 0.5 * vnoise(u * 2.6 + 3.1)
@@ -65,15 +63,15 @@ function hueAt(stops, x) {
   return ((h % 360) + 360) % 360;
 }
 
-// Column amplitude at horizontal position x for a given scroll offset: a faint
-// continuous spine + a centred mass + the scrolling signal riding on top.
-function amplitudeAt(x, scroll) {
-  const s = signal(x * SPAN_U + scroll);     // +scroll → features travel right→left
-  const a = 0.05 + win(x) * (0.10 + (0.25 + 0.75 * intensity) * s);
+// Column amplitude: a faint continuous spine + a centred mass + the signal.
+// Full height regardless of state, so the idle (frozen) wave still looks rich.
+function amplitudeAt(x, sc) {
+  const s = signal(x * SPAN_U + sc);        // +sc → features travel right→left
+  const a = 0.05 + win(x) * (0.12 + 0.78 * s);
   return Math.max(0.05, Math.min(1, a));
 }
 
-function draw(scroll) {
+function draw() {
   if (!canvas) return;
   const accent = ACCENTS[document.documentElement.dataset.accent] || ACCENTS[DEFAULT_ACCENT];
   const mode = resolveMode();
@@ -108,7 +106,7 @@ function draw(scroll) {
       if (pres <= 0.02) continue;
       const rad = maxR * pres;
       if (rad < 0.4) continue;
-      const light = baseL + presL * pres + 12 * pres * intensity;
+      const light = baseL + presL * pres + 12 * pres * glow;
       const alpha = 0.26 + 0.74 * pres;
       ctx.fillStyle = `hsla(${hue.toFixed(0)}, 82%, ${light.toFixed(1)}%, ${alpha.toFixed(3)})`;
       ctx.beginPath();
@@ -118,37 +116,38 @@ function draw(scroll) {
   }
 }
 
+// ── Motion: only runs while a job is working ─────────────────────────────
 function frame(ts) {
   if (!last) last = ts;
   const dt = (ts - last) / 1000;
-  if (dt >= 0.03) {                                   // ~30fps is plenty for a calm flow
-    t += dt * (0.85 + 0.5 * intensity);               // a touch faster while working
-    intensity += (target - intensity) * Math.min(1, dt * 3);
+  if (dt >= 0.03) {                          // ~30fps is plenty for a calm flow
+    scroll += dt * SCROLL;
+    glow += (1 - glow) * Math.min(1, dt * 2);
     last = ts;
-    draw(t * SCROLL);
+    draw();
   }
   raf = window.requestAnimationFrame(frame);
 }
+function startMotion() { if (reduceMotion || raf) return; last = 0; raf = window.requestAnimationFrame(frame); }
+function stopMotion() {
+  if (raf) { window.cancelAnimationFrame(raf); raf = null; }
+  glow = 0;
+  draw();                                    // freeze on the current frame, static
+}
 
-function start() { if (reduceMotion || raf) return; last = 0; raf = window.requestAnimationFrame(frame); }
-
-// A job is "working" whenever a live status badge is on screen. Polling the DOM
-// keeps wave.js fully decoupled from the jobs/SSE code; it only nudges the flow.
 function activeJobsPresent() {
   return !!document.querySelector(".badge--converting, .badge--transcribing, .badge--tidying");
 }
-window.setInterval(() => { target = activeJobsPresent() ? ACTIVE : REST; }, 700);
+window.setInterval(() => {
+  const now = activeJobsPresent();
+  if (now && !active) { active = true; startMotion(); }
+  else if (!now && active) { active = false; stopMotion(); }
+}, 700);
 
-if (reduceMotion) {
-  // Static: one frame (still randomly seeded, so each load differs), recoloured
-  // on theme/resize. No motion.
-  intensity = REST;
-  window.addEventListener("load", () => draw(0));
-  document.addEventListener("fluister:themechange", () => draw(0));
-  window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => draw(0), 150); });
-  setTimeout(() => draw(0), 30);
-} else {
-  window.addEventListener("load", start);
-  document.addEventListener("fluister:themechange", () => { if (!raf) draw(t * SCROLL); });
-  setTimeout(start, 30);
-}
+// Static paints (the default state, plus theme/resize while idle). The motion
+// loop owns redraws while it's running.
+function paintIfStill() { if (!raf) draw(); }
+window.addEventListener("load", paintIfStill);
+document.addEventListener("fluister:themechange", paintIfStill);
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(paintIfStill, 150); });
+setTimeout(paintIfStill, 30);

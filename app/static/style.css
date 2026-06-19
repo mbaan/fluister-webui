@@ -155,8 +155,9 @@ html, body {
 body {
   min-height: 100vh;
   background:
-    radial-gradient(900px 480px at 85% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
-    radial-gradient(820px 460px at 4% 0%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 55%),
+    radial-gradient(1050px 560px at 88% -12%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 60%),
+    radial-gradient(950px 520px at -6% 2%, color-mix(in srgb, var(--accent-2) 16%, transparent), transparent 55%),
+    radial-gradient(820px 640px at 50% 118%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 60%),
     var(--bg);
   background-attachment: fixed;
   transition: background-color .3s ease, color .3s ease;
@@ -284,16 +285,17 @@ body {
 
 .dropzone {
   position: relative;
-  border: 1.6px dashed var(--line-strong);
+  border: 1.6px dashed color-mix(in srgb, var(--accent) 38%, var(--line-strong));
   border-radius: var(--r);
-  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  background: linear-gradient(180deg, var(--accent-soft), var(--surface) 72%);
   padding: 34px 20px;
   cursor: pointer;
-  transition: border-color .18s ease, background .18s ease, transform .12s ease;
+  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease, transform .12s ease;
 }
 .dropzone:hover, .dropzone:focus-visible {
   border-color: var(--accent);
-  background: linear-gradient(180deg, var(--accent-softer), var(--surface));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), var(--surface) 76%);
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--accent) 16%, transparent);
   outline: none;
 }
 .dropzone.is-dragover {
@@ -339,10 +341,18 @@ select:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0
 
 /* ═══ Section heads ══════════════════════════════════════════════════════ */
 .jobs__head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
-.jobs__head h2 { margin: 0; font-size: 16px; font-weight: 640; letter-spacing: -.01em; }
+.jobs__head h2 {
+  margin: 0; font-size: 16px; font-weight: 640; letter-spacing: -.01em;
+  position: relative; padding-bottom: 5px;
+}
+.jobs__head h2::after {
+  content: ""; position: absolute; left: 0; bottom: 0; width: 30px; height: 3px;
+  border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
 .jobs__count {
-  color: var(--accent-ink); font-size: 12px; font-weight: 640;
-  background: var(--accent-soft); border-radius: var(--pill); padding: 1px 9px;
+  color: #fff; font-size: 12px; font-weight: 640;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-radius: var(--pill); padding: 1px 9px;
 }
 .job-list { display: flex; flex-direction: column; gap: 12px; }
 
@@ -352,15 +362,15 @@ select:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0
 .card {
   border: 1px solid var(--line);
   border-radius: var(--r);
-  background: var(--surface);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--surface)), var(--surface) 64%);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
   transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease;
   animation: card-in .26s ease both;
 }
-.card:hover { box-shadow: var(--shadow); }
+.card:hover { border-color: var(--accent-line); box-shadow: 0 10px 30px color-mix(in srgb, var(--accent) 15%, transparent); }
 @keyframes card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.card.is-open { border-color: var(--accent-line); }
+.card.is-open { border-color: var(--accent-line); box-shadow: 0 12px 34px color-mix(in srgb, var(--accent) 18%, transparent); }
 
 .card__head {
   display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px;
@@ -511,11 +521,12 @@ select:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0
 .person-list { display: flex; flex-direction: column; gap: 10px; }
 .person {
   display: flex; flex-direction: column; align-items: stretch; gap: 10px;
-  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--surface)), var(--surface) 64%);
   padding: 12px 14px; box-shadow: var(--shadow-sm);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
-.person:hover { border-color: var(--line-strong); box-shadow: var(--shadow); }
+.person:hover { border-color: var(--accent-line); box-shadow: 0 10px 30px color-mix(in srgb, var(--accent) 14%, transparent); }
 .person__top { display: flex; align-items: center; gap: 12px; }
 .person__main { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1 1 auto; }
 .person__name {

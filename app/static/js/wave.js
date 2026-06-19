@@ -77,17 +77,20 @@ function draw() {
     const hue = hueAt(accent.stops, x);
     // Traveling crest: 0..1, peaks sweep from left to right as t grows.
     const flow = 0.5 + 0.5 * Math.sin(x * Math.PI * 2.4 - t);
+    // Travelling height ripple: each column's reach grows/shrinks as the crest
+    // passes, so the silhouette visibly flows left→right (not just a shimmer).
+    const aMod = a * (1 - intensity * 0.45 * (1 - flow));
     for (let r = 0; r < rows; r++) {
       const y = (r - rows / 2) * spacing + cy + spacing / 2;
       const ry = Math.abs((y - cy) / vSpan);
       if (ry > 1.05) continue;
-      let pres = (a - ry + 0.12) / 0.30;
+      let pres = (aMod - ry + 0.12) / 0.30;
       pres = Math.max(0, Math.min(1, pres));
       if (pres <= 0.02) continue;
-      const rad = maxR * pres * (0.78 + 0.36 * flow * intensity);
+      const rad = maxR * pres * (0.86 + 0.16 * flow);
       if (rad < 0.4) continue;
-      const light = baseL + presL * pres + 22 * intensity * flow;
-      const alpha = (0.22 + 0.74 * pres) * (1 - 0.52 * intensity * (1 - flow));
+      const light = baseL + presL * pres + 18 * intensity * flow;
+      const alpha = 0.26 + 0.74 * pres;
       ctx.fillStyle = `hsla(${hue.toFixed(0)}, 82%, ${light.toFixed(1)}%, ${alpha.toFixed(3)})`;
       ctx.beginPath();
       ctx.arc(cx, y, rad, 0, Math.PI * 2);

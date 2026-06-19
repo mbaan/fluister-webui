@@ -240,6 +240,12 @@ async def list_jobs():
     return db.list_jobs(settings.db_path)
 
 
+@app.get("/api/search")
+async def search(q: str = ""):
+    """Full-text search across transcripts + filenames (FTS5, LIKE fallback)."""
+    return db.search_jobs(settings.db_path, q, limit=20)
+
+
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
     job = db.get_job(settings.db_path, job_id)

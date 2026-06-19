@@ -2155,6 +2155,115 @@
     if (initialQ) reading.search(initialQ);
   }
 
+  // ════════════════════════════════════════════════════════════════════
+  //  Global search palette — FTS5 across every transcript (kept low-key:
+  //  summoned from the hero search icon or the "/" key, not a fixed bar).
+  // ════════════════════════════════════════════════════════════════════
+  let searchPal = null;
+
+  function isTypingTarget(t) {
+    if (!t) return false;
+    const tag = t.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
+  }
+
+  function openSearch() {
+    if (searchPal) return;
+    const ov = el("div", { class: "cmd" });
+    const box = el("div", { class: "cmd__box" });
+    const head = el("div", { class: "cmd__head" });
+    head.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>';
+    const input = el("input", { class: "cmd__input", type: "search", placeholder: "Search across every transcript…", "aria-label": "Search transcripts", autocomplete: "off" });
+    head.appendChild(input);
+    const results = el("div", { class: "cmd__results" });
+    box.appendChild(head); box.appendChild(results);
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    searchPal = { ov, input, results, items: [], idx: -1, q: "" };
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeSearch(); });
+    input.addEventListener("input", () => scheduleSearch(input.value));
+    input.addEventListener("keydown", onSearchKey);
+    renderSearchResults([]);
+    input.focus();
+  }
+
+  function closeSearch() { if (!searchPal) return; searchPal.ov.remove(); searchPal = null; }
+
+  let searchTimer = null;
+  function scheduleSearch(q) { clearTimeout(searchTimer); searchTimer = setTimeout(() => runGlobalSearch(q), 180); }
+
+  async function runGlobalSearch(q) {
+    if (!searchPal) return;
+    searchPal.q = (q || "").trim();
+    if (!searchPal.q) { renderSearchResults([]); return; }
+    try {
+      const r = await fetch(`/api/search?q=${encodeURIComponent(searchPal.q)}`);
+      const list = r.ok ? await r.json() : [];
+      if (searchPal) renderSearchResults(Array.isArray(list) ? list : []);
+    } catch (e) { if (searchPal) renderSearchResults([]); }
+  }
+
+  function renderSearchResults(list) {
+    if (!searchPal) return;
+    searchPal.items = list; searchPal.idx = list.length ? 0 : -1;
+    const res = searchPal.results; res.innerHTML = "";
+    if (!list.length) {
+      res.appendChild(el("div", { class: "cmd__empty", text: searchPal.q ? "No matches." : "Type to search across every transcript." }));
+      return;
+    }
+    list.forEach((it, i) => {
+      const row = el("div", { class: "cmd__row" + (i === 0 ? " is-active" : ""), dataset: { i: String(i) } });
+      row.appendChild(el("div", { class: "cmd__file", text: it.filename || "(unnamed)" }));
+      row.appendChild(snippetNode(it.snippet || ""));
+      row.addEventListener("click", () => gotoResult(i));
+      row.addEventListener("mousemove", () => setSearchActive(i));
+      res.appendChild(row);
+    });
+  }
+
+  // Render a snippet, converting the U+E000/U+E001 marker chars the backend
+  // wraps matches in into <mark> (never inject raw HTML from the server).
+  function snippetNode(s) {
+    const node = el("div", { class: "cmd__snip" });
+    let buf = "", mark = false;
+    const flush = () => {
+      if (!buf) return;
+      if (mark) { const m = document.createElement("mark"); m.textContent = buf; node.appendChild(m); }
+      else node.appendChild(document.createTextNode(buf));
+      buf = "";
+    };
+    for (const ch of String(s)) {
+      if (ch === "") { flush(); mark = true; }
+      else if (ch === "") { flush(); mark = false; }
+      else buf += ch;
+    }
+    flush();
+    return node;
+  }
+
+  function setSearchActive(i) {
+    if (!searchPal) return;
+    const rows = searchPal.results.querySelectorAll(".cmd__row");
+    rows.forEach((r, j) => r.classList.toggle("is-active", j === i));
+    searchPal.idx = i;
+    if (rows[i]) rows[i].scrollIntoView({ block: "nearest" });
+  }
+
+  function gotoResult(i) {
+    if (!searchPal) return;
+    const it = searchPal.items[i]; if (!it) return;
+    const q = searchPal.q; closeSearch();
+    location.hash = `#/read/${encodeURIComponent(it.job_id)}` + (q ? `?q=${encodeURIComponent(q)}` : "");
+  }
+
+  function onSearchKey(e) {
+    if (!searchPal) return;
+    if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); if (searchPal.items.length) setSearchActive((searchPal.idx + 1) % searchPal.items.length); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); if (searchPal.items.length) setSearchActive((searchPal.idx - 1 + searchPal.items.length) % searchPal.items.length); }
+    else if (e.key === "Enter") { e.preventDefault(); if (searchPal.idx >= 0) gotoResult(searchPal.idx); }
+  }
+
   // ── Boot ─────────────────────────────────────────────────────────────
   function init() {
     wireUploader();
@@ -2168,8 +2277,14 @@
     }
     if (clearAllBtn) clearAllBtn.addEventListener("click", clearAllJobs);
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && reading) location.hash = "#/";
+      if (e.key === "Escape" && reading && !searchPal) location.hash = "#/";
+      else if (e.key === "/" && !searchPal && !isTypingTarget(e.target)) {
+        e.preventDefault();
+        openSearch();
+      }
     });
+    const gsb = document.getElementById("globalSearchBtn");
+    if (gsb) gsb.addEventListener("click", openSearch);
     poll();
     setInterval(poll, POLL_MS);
     route(); // honor an initial #/read/<id> or #/speakers deep link

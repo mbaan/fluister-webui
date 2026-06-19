@@ -7,10 +7,18 @@ is safe across the request handlers and the background worker thread.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Whether this SQLite build has FTS5 (set by init_db). When false, full-text
+# search falls back to a LIKE scan. Snippet matches are wrapped in these private
+# -use markers so the web UI can render them as <mark> regardless of path.
+_FTS_OK = False
+_SNIPPET_OPEN = ""
+_SNIPPET_CLOSE = ""
 
 # Job lifecycle states.
 STATUS_QUEUED = "queued"
@@ -89,9 +97,34 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path) -> None:
+    global _FTS_OK
     with _connect(db_path) as conn:
         conn.executescript(_SCHEMA)
         _migrate(conn)
+        _FTS_OK = _init_fts(conn)
+
+
+def _init_fts(conn: sqlite3.Connection) -> bool:
+    """Create the full-text index (if this SQLite build has FTS5) and rebuild it
+    from the jobs table, so the index always matches on startup. Returns whether
+    FTS5 is available; when it isn't, search falls back to a LIKE scan."""
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts "
+            "USING fts5(job_id UNINDEXED, filename, body)"
+        )
+    except sqlite3.OperationalError:
+        return False
+    # Rebuild from jobs. Guard transcript_text: a hand-migrated old DB may not
+    # have it yet (it's added elsewhere), in which case index filenames only.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    body = "COALESCE(transcript_text, '')" if "transcript_text" in cols else "''"
+    conn.execute("DELETE FROM jobs_fts")
+    conn.execute(
+        f"INSERT INTO jobs_fts(job_id, filename, body) "
+        f"SELECT id, original_filename, {body} FROM jobs"
+    )
+    return True
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -145,6 +178,11 @@ def create_job(db_path: Path, job: dict[str, Any]) -> dict[str, Any]:
         conn.execute(
             f"INSERT INTO jobs ({', '.join(columns)}) VALUES ({placeholders})", row
         )
+        if _FTS_OK:
+            conn.execute(
+                "INSERT INTO jobs_fts(job_id, filename, body) VALUES (?, ?, ?)",
+                (row["id"], row["original_filename"], ""),
+            )
     return get_job(db_path, job["id"])  # type: ignore[return-value]
 
 
@@ -156,6 +194,23 @@ def update_job(db_path: Path, job_id: str, **fields: Any) -> None:
     params["id"] = job_id
     with _connect(db_path) as conn:
         conn.execute(f"UPDATE jobs SET {assignments} WHERE id = :id", params)
+        # Keep the search index current only when the indexed text actually
+        # changes (not on every progress tick).
+        if _FTS_OK and ("transcript_text" in fields or "original_filename" in fields):
+            _reindex_job(conn, job_id)
+
+
+def _reindex_job(conn: sqlite3.Connection, job_id: str) -> None:
+    """Refresh one job's FTS row from its current filename + transcript."""
+    r = conn.execute(
+        "SELECT original_filename, transcript_text FROM jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    conn.execute("DELETE FROM jobs_fts WHERE job_id = ?", (job_id,))
+    if r:
+        conn.execute(
+            "INSERT INTO jobs_fts(job_id, filename, body) VALUES (?, ?, ?)",
+            (job_id, r["original_filename"], r["transcript_text"] or ""),
+        )
 
 
 def get_job(db_path: Path, job_id: str) -> dict[str, Any] | None:
@@ -179,6 +234,8 @@ def delete_job(db_path: Path, job_id: str) -> dict[str, Any] | None:
         return None
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        if _FTS_OK:
+            conn.execute("DELETE FROM jobs_fts WHERE job_id = ?", (job_id,))
     return job
 
 
@@ -205,7 +262,10 @@ def clear_jobs(db_path: Path) -> int:
     """Delete every job row (persons / voice gallery are left intact).
     Returns the number of jobs removed."""
     with _connect(db_path) as conn:
-        return conn.execute("DELETE FROM jobs").rowcount
+        n = conn.execute("DELETE FROM jobs").rowcount
+        if _FTS_OK:
+            conn.execute("DELETE FROM jobs_fts")
+        return n
 
 
 def mark_interrupted(db_path: Path) -> list[str]:
@@ -231,6 +291,72 @@ def mark_interrupted(db_path: Path) -> list[str]:
                 (STATUS_INTERRUPTED, "Interrupted by server restart", *ACTIVE_STATUSES),
             )
     return ids
+
+
+# ── full-text search ─────────────────────────────────────────────────────────
+def _fts_match_expr(query: str) -> str:
+    """Turn a free-text query into a safe FTS5 MATCH expression: each word
+    becomes a prefix term (implicit AND). Strips operators that could break the
+    parser. Returns "" when there's nothing searchable."""
+    tokens = re.findall(r"\w+", query, re.UNICODE)
+    return " ".join(t + "*" for t in tokens)
+
+
+def _like_snippet(text: str, q: str, radius: int = 64) -> str:
+    """A small context window around the first match, with the match wrapped in
+    the shared marker chars (used by the LIKE fallback so the UI renders the
+    same way as the FTS path)."""
+    if not text:
+        return ""
+    i = text.lower().find(q.lower())
+    if i < 0:
+        s = text.strip()
+        return (s[:140] + "…") if len(s) > 140 else s
+    start, end = max(0, i - radius), min(len(text), i + len(q) + radius)
+    return (
+        ("…" if start > 0 else "") + text[start:i]
+        + _SNIPPET_OPEN + text[i:i + len(q)] + _SNIPPET_CLOSE
+        + text[i + len(q):end] + ("…" if end < len(text) else "")
+    )
+
+
+def search_jobs(db_path: Path, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Full-text search across job filenames + transcripts. Returns
+    [{job_id, filename, snippet}] ranked by relevance (bm25 under FTS5, recency
+    under the LIKE fallback). Snippet matches are wrapped in marker chars."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    with _connect(db_path) as conn:
+        if _FTS_OK:
+            expr = _fts_match_expr(q)
+            if expr:
+                try:
+                    rows = conn.execute(
+                        "SELECT j.id AS id, j.original_filename AS filename, "
+                        "snippet(jobs_fts, 2, char(57344), char(57345), '…', 14) AS snip "
+                        "FROM jobs_fts JOIN jobs j ON j.id = jobs_fts.job_id "
+                        "WHERE jobs_fts MATCH ? ORDER BY bm25(jobs_fts) LIMIT ?",
+                        (expr, limit),
+                    ).fetchall()
+                    return [
+                        {"job_id": r["id"], "filename": r["filename"], "snippet": r["snip"] or ""}
+                        for r in rows
+                    ]
+                except sqlite3.OperationalError:
+                    pass  # malformed MATCH or no FTS — fall through to LIKE
+        like = f"%{q}%"
+        rows = conn.execute(
+            "SELECT id, original_filename AS filename, transcript_text FROM jobs "
+            "WHERE transcript_text LIKE ? OR original_filename LIKE ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (like, like, limit),
+        ).fetchall()
+        return [
+            {"job_id": r["id"], "filename": r["filename"],
+             "snippet": _like_snippet(r["transcript_text"] or "", q)}
+            for r in rows
+        ]
 
 
 # ── persons / global voice gallery ──────────────────────────────────────────

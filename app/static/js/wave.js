@@ -19,7 +19,7 @@ const canvas = document.getElementById("waveCanvas");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const SPAN_U = 13;    // signal units visible across the width — higher = denser
-const SCROLL = 0.75;  // signal units travelled per second while working (calm pace)
+const SCROLL = 0.94;  // signal units travelled per second while working
 
 const seed = Math.random() * 1000;  // fresh waveform shape on every page load
 
@@ -49,11 +49,13 @@ function signal(u) {
   let d = 0.5 * vnoise(u * 2.6 + 3.1)
         + 0.3 * vnoise(u * 5.7 + 7.7)
         + 0.2 * vnoise(u * 11.3 + 9.1);
-  d = Math.pow(d, 2.4);
+  d = Math.pow(d, 2.6);                                // spikier → bigger standout peaks
   return Math.min(1, env * (0.12 + 0.88 * d) * 2.2);   // gain so peaks reach full height
 }
 // Center-weighted hero envelope: high in the middle, tapers to the edges.
-function win(x) { return Math.pow(Math.sin(Math.PI * x), 0.7); }
+// A gentle taper (low exponent) keeps a broad plateau so big peaks can appear
+// across more of the width, not only dead-centre.
+function win(x) { return Math.pow(Math.sin(Math.PI * x), 0.55); }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 function hueAt(stops, x) {
@@ -67,7 +69,7 @@ function hueAt(stops, x) {
 // Full height regardless of state, so the idle (frozen) wave still looks rich.
 function amplitudeAt(x, sc) {
   const s = signal(x * SPAN_U + sc);        // +sc → features travel right→left
-  const a = 0.05 + win(x) * (0.12 + 0.78 * s);
+  const a = 0.05 + win(x) * (0.10 + 0.90 * s);
   return Math.max(0.05, Math.min(1, a));
 }
 

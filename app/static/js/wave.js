@@ -2,9 +2,10 @@
 
 /* The halftone dot-matrix soundwave that crowns the app.
  *
- * Fully procedural (no image): a continuous 1-D signal — layered value noise,
- * reseeded every page load so the pattern is fresh each visit — is *scrolled*
- * left→right through a center-weighted envelope and dithered into dots whose
+ * Fully procedural (no image): a continuous 1-D signal — gated, spiky value
+ * noise, reseeded every page load so the pattern is fresh each visit — scrolls
+ * right→left (like a player) through a center-weighted envelope, dithered into
+ * dots whose
  * size/opacity fall off from the centre line. So it reads like a real waveform
  * flowing through the matrix, not a fixed shape wobbling in place.
  *
@@ -19,8 +20,8 @@ const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").match
 
 const REST = 0.6;     // idle signal strength
 const ACTIVE = 1.0;   // signal strength while a job is transcribing
-const SPAN_U = 6.5;   // signal units visible across the width (≈ how many features)
-const SCROLL = 1.0;   // signal units travelled per second
+const SPAN_U = 9;     // signal units visible across the width (≈ how many features)
+const SCROLL = 1.3;   // signal units travelled per second
 
 const seed = Math.random() * 1000;  // fresh waveform shape on every page load
 
@@ -42,8 +43,16 @@ function vnoise(u) {
   return a + (b - a) * w;
 }
 function signal(u) {
-  let v = 0.55 * vnoise(u * 0.6) + 0.30 * vnoise(u * 1.7 + 3.1) + 0.15 * vnoise(u * 3.9 + 7.7);
-  return Math.pow(Math.max(0, Math.min(1, v)), 1.35);  // sharpen into speech-like bursts
+  // Slow "activity" gate → carves quiet gaps between bursts.
+  let env = vnoise(u * 0.5 + 1.7);
+  env = env < 0.42 ? 0 : (env - 0.42) / 0.58;
+  env = env * env * (3 - 2 * env);                     // smooth the gate edges
+  // Spiky multi-octave detail → tall peaks with small ripples between.
+  let d = 0.5 * vnoise(u * 2.6 + 3.1)
+        + 0.3 * vnoise(u * 5.7 + 7.7)
+        + 0.2 * vnoise(u * 11.3 + 9.1);
+  d = Math.pow(d, 2.4);
+  return Math.min(1, env * (0.12 + 0.88 * d) * 2.2);   // gain so peaks reach full height
 }
 // Center-weighted hero envelope: high in the middle, tapers to the edges.
 function win(x) { return Math.pow(Math.sin(Math.PI * x), 0.7); }
@@ -59,8 +68,8 @@ function hueAt(stops, x) {
 // Column amplitude at horizontal position x for a given scroll offset: a faint
 // continuous spine + a centred mass + the scrolling signal riding on top.
 function amplitudeAt(x, scroll) {
-  const s = signal(x * SPAN_U - scroll);
-  const a = 0.055 + win(x) * (0.22 + (0.30 + 0.70 * intensity) * s);
+  const s = signal(x * SPAN_U + scroll);     // +scroll → features travel right→left
+  const a = 0.05 + win(x) * (0.10 + (0.25 + 0.75 * intensity) * s);
   return Math.max(0.05, Math.min(1, a));
 }
 

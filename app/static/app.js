@@ -1066,6 +1066,11 @@
 
   function buildActions(job) {
     const actions = el("div", { class: "actions" });
+    const read = el("button", { class: "btn btn--primary" });
+    read.appendChild(readIcon());
+    read.appendChild(document.createTextNode("Read"));
+    read.addEventListener("click", () => openReadingRoute(job.id));
+    actions.appendChild(read);
     const copy = el("button", { class: "btn btn--ghost" });
     copy.appendChild(copyIcon());
     copy.appendChild(document.createTextNode("Copy"));
@@ -1603,7 +1608,9 @@
 
   function wireNav() {
     navButtons.forEach((btn) => {
-      btn.addEventListener("click", () => showView(btn.dataset.view));
+      btn.addEventListener("click", () => {
+        location.hash = btn.dataset.view === "speakers" ? "#/speakers" : "#/";
+      });
     });
   }
 
@@ -1704,26 +1711,8 @@
     row.appendChild(top);
 
     // Keyword/hotword list — biases the recogniser toward the names this person
-    // mentions. Saved on blur.
-    const kwInput = el("input", {
-      class: "person__keywords",
-      type: "text",
-      value: p.keywords || "",
-      placeholder: "keywords this person mentions (names, places)…",
-      "aria-label": `Keywords for ${p.name || "this speaker"}`,
-      maxlength: "600",
-    });
-    const commitKw = () => {
-      const next = kwInput.value.trim();
-      if (next === (p.keywords || "")) { kwInput.value = next; return; }
-      saveKeywords(p, next);
-    };
-    kwInput.addEventListener("blur", commitKw);
-    kwInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); kwInput.blur(); }
-      else if (e.key === "Escape") { kwInput.value = p.keywords || ""; kwInput.blur(); }
-    });
-    row.appendChild(kwInput);
+    // mentions. A sorted chip editor; serialises back to the comma string.
+    row.appendChild(buildKeywordEditor(p));
 
     return row;
   }
@@ -1824,9 +1813,353 @@
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════════════
+  //  Speakers — keyword chip editor
+  //  Replaces the raw comma-separated field with sorted, removable chips.
+  //  Serialises back to the same comma string the API already expects.
+  // ════════════════════════════════════════════════════════════════════
+  function parseKeywords(s) {
+    return Array.from(new Set((s || "").split(",").map((x) => x.trim()).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  function buildKeywordEditor(p) {
+    let chips = parseKeywords(p.keywords);
+    const wrap = el("div", { class: "kw" });
+    const list = el("div", { class: "kw__chips" });
+    const input = el("input", {
+      class: "kw__input", type: "text", maxlength: "80",
+      "aria-label": `Keywords for ${p.name || "this speaker"}`,
+    });
+
+    const commit = () => {
+      const csv = chips.join(", ");
+      if (csv !== (p.keywords || "")) { p.keywords = csv || null; saveKeywords(p, csv); }
+    };
+    const render = () => {
+      list.innerHTML = "";
+      for (const kw of chips) {
+        const chip = el("span", { class: "kw__chip" }, [document.createTextNode(kw)]);
+        const x = el("button", { class: "kw__x", type: "button", "aria-label": `Remove ${kw}`, text: "×" });
+        x.addEventListener("click", () => { chips = chips.filter((k) => k !== kw); render(); commit(); input.focus(); });
+        chip.appendChild(x);
+        list.appendChild(chip);
+      }
+      input.placeholder = chips.length ? "add another…" : "keywords this person mentions (names, places)…";
+    };
+    const addFromInput = () => {
+      let added = false;
+      for (const part of input.value.split(",")) {
+        const t = part.trim();
+        if (t && !chips.includes(t)) { chips.push(t); added = true; }
+      }
+      input.value = "";
+      if (added) { chips.sort((a, b) => a.localeCompare(b)); render(); commit(); }
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addFromInput(); }
+      else if (e.key === "Backspace" && !input.value && chips.length) { chips = chips.slice(0, -1); render(); commit(); }
+    });
+    input.addEventListener("blur", addFromInput);
+
+    render();
+    wrap.appendChild(list);
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  Focused reading view  (#/read/<id>)
+  //  A distraction-free full-screen surface: Readable/Raw, in-transcript
+  //  search, click-a-word-to-play, and a player with power tools.
+  // ════════════════════════════════════════════════════════════════════
+  let reading = null;
+
+  function readIcon() {
+    const s = document.createElement("span");
+    s.style.display = "inline-flex";
+    s.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5h8a3 3 0 0 1 2 2 3 3 0 0 1 2-2h8M2 5v13h8a3 3 0 0 1 2 1 3 3 0 0 1 2-1h8V5"/></svg>';
+    return s;
+  }
+
+  function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+  function openReadingRoute(id) { location.hash = "#/read/" + encodeURIComponent(id); }
+
+  function route() {
+    const h = location.hash || "#/";
+    const m = h.match(/^#\/read\/([^?]+)(?:\?q=(.*))?$/);
+    if (m) { openReading(decodeURIComponent(m[1]), m[2] ? decodeURIComponent(m[2]) : ""); return; }
+    closeReading();
+    if (h.indexOf("#/speakers") === 0) showView("speakers");
+    else showView("transcriptions");
+  }
+
+  async function openReading(id, q) {
+    if (reading && reading.id === id) { if (q) reading.search(q); return; }
+    closeReading();
+    let job = jobs.get(id);
+    if (!job) {
+      try { const r = await fetch(`${API}/${encodeURIComponent(id)}`); if (r.ok) { job = await r.json(); jobs.set(id, job); } } catch (e) {}
+    }
+    if (!job) { location.hash = "#/"; return; }
+    if (playingId) { const u = ui.get(playingId); if (u && u.audio) { try { u.audio.pause(); } catch (e) {} } }
+
+    let data = null;
+    try {
+      const r = await fetch(`${API}/${encodeURIComponent(id)}/transcript`, { headers: { Accept: "application/json" } });
+      if (r.ok) data = await r.json();
+    } catch (e) {}
+    buildReadingOverlay(job, data, q || "");
+  }
+
+  function closeReading() {
+    if (!reading) return;
+    if (reading.raf) cancelAnimationFrame(reading.raf);
+    if (reading.audio) { try { reading.audio.pause(); } catch (e) {} try { reading.audio.removeAttribute("src"); } catch (e) {} }
+    reading.overlay.remove();
+    document.body.classList.remove("reading-open");
+    reading = null;
+  }
+
+  function setReadingWord(idx) {
+    if (!reading) return;
+    if (idx === reading.activeWordIdx) return;
+    if (reading.activeWordIdx >= 0 && reading.wordSpans[reading.activeWordIdx]) {
+      reading.wordSpans[reading.activeWordIdx].classList.remove("word--active");
+    }
+    reading.activeWordIdx = idx;
+    const sp = idx >= 0 ? reading.wordSpans[idx] : null;
+    if (sp) {
+      sp.classList.add("word--active");
+      const r = sp.getBoundingClientRect();
+      if (r.top < 96 || r.bottom > window.innerHeight - 140) sp.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  function highlightReadingAt(t) {
+    const starts = reading.wordStarts;
+    if (!starts || !starts.length) return;
+    const time = safeNumber(t);
+    if (time == null) return;
+    if (time < starts[0]) { setReadingWord(-1); return; }
+    let lo = 0, hi = starts.length - 1, idx = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (starts[mid] <= time) { idx = mid; lo = mid + 1; } else hi = mid - 1; }
+    setReadingWord(idx);
+  }
+
+  function buildReadingPlayer(id, segs) {
+    const audio = el("audio", { preload: "metadata" });
+    audio.src = audioSrcFor(id);
+    audio.style.display = "none";
+
+    const bar = el("div", { class: "reading__player" });
+    const playBtn = el("button", { class: "rp__play", type: "button", "aria-label": "Play" });
+    playBtn.innerHTML = playIconSvg(false);
+    const back10 = el("button", { class: "rp__btn", type: "button", "aria-label": "Back 10 seconds", title: "Back 10s", text: "−10" });
+    const fwd10 = el("button", { class: "rp__btn", type: "button", "aria-label": "Forward 10 seconds", title: "Forward 10s", text: "+10" });
+    const range = el("input", { class: "rp__range", type: "range", min: "0", max: "1000", value: "0", "aria-label": "Seek" });
+    const time = el("span", { class: "rp__time", text: "0:00 / 0:00" });
+    const speed = el("button", { class: "rp__btn rp__speed", type: "button", title: "Playback speed", text: "1×" });
+    const silence = el("button", { class: "rp__btn rp__toggle", type: "button", title: "Skip silence", "aria-pressed": "false", text: "Skip silence" });
+    const ab = el("button", { class: "rp__btn rp__toggle", type: "button", title: "A–B loop", "aria-pressed": "false", text: "A–B" });
+
+    bar.appendChild(playBtn); bar.appendChild(back10); bar.appendChild(fwd10);
+    bar.appendChild(range); bar.appendChild(time);
+    bar.appendChild(speed); bar.appendChild(silence); bar.appendChild(ab); bar.appendChild(audio);
+
+    let seeking = false, spIdx = 0, skipSilence = false, abA = null, abB = null;
+    const SPEEDS = [1, 1.25, 1.5, 2, 0.75];
+
+    function refreshTime() {
+      const cur = audio.currentTime || 0, d = Number.isFinite(audio.duration) ? audio.duration : 0;
+      time.textContent = `${formatClock(cur)} / ${formatClock(d)}`;
+      if (!seeking && d) range.value = String(Math.round((cur / d) * 1000));
+    }
+    function maybeSkipSilence() {
+      const t = audio.currentTime;
+      for (let i = 0; i < segs.length - 1; i++) {
+        const end = safeNumber(segs[i].end), nextStart = safeNumber(segs[i + 1].start);
+        if (end == null || nextStart == null) continue;
+        if (t >= end + 0.15 && t < nextStart - 0.05 && nextStart - end > 0.8) { audio.currentTime = nextStart; return; }
+      }
+    }
+
+    audio.addEventListener("loadedmetadata", refreshTime);
+    audio.addEventListener("timeupdate", () => {
+      refreshTime();
+      if (abA != null && abB != null && audio.currentTime >= abB) audio.currentTime = abA;
+      if (skipSilence) maybeSkipSilence();
+    });
+    audio.addEventListener("play", () => { playBtn.innerHTML = playIconSvg(true); playBtn.setAttribute("aria-label", "Pause"); });
+    audio.addEventListener("pause", () => { playBtn.innerHTML = playIconSvg(false); playBtn.setAttribute("aria-label", "Play"); });
+    audio.addEventListener("ended", () => { playBtn.innerHTML = playIconSvg(false); });
+
+    playBtn.addEventListener("click", () => { if (audio.paused) { const p = audio.play(); if (p && p.catch) p.catch(() => {}); } else audio.pause(); });
+    back10.addEventListener("click", () => { audio.currentTime = Math.max(0, audio.currentTime - 10); });
+    fwd10.addEventListener("click", () => { audio.currentTime = Math.min(audio.duration || 1e9, audio.currentTime + 10); });
+    range.addEventListener("input", () => { seeking = true; const d = audio.duration || 0; if (d) time.textContent = `${formatClock((range.value / 1000) * d)} / ${formatClock(d)}`; });
+    range.addEventListener("change", () => { const d = audio.duration || 0; if (d) audio.currentTime = (range.value / 1000) * d; seeking = false; });
+    speed.addEventListener("click", () => { spIdx = (spIdx + 1) % SPEEDS.length; audio.playbackRate = SPEEDS[spIdx]; speed.textContent = SPEEDS[spIdx] + "×"; });
+    silence.addEventListener("click", () => { skipSilence = !skipSilence; silence.classList.toggle("is-on", skipSilence); silence.setAttribute("aria-pressed", String(skipSilence)); });
+    ab.addEventListener("click", () => {
+      if (abA == null) { abA = audio.currentTime; ab.textContent = "A…"; ab.classList.add("is-on"); }
+      else if (abB == null) { abB = audio.currentTime; if (abB < abA) { const t = abA; abA = abB; abB = t; } ab.textContent = "A–B ✓"; }
+      else { abA = null; abB = null; ab.textContent = "A–B"; ab.classList.remove("is-on"); }
+      ab.setAttribute("aria-pressed", String(abA != null));
+    });
+
+    return { bar, audio, seek: (t) => { audio.currentTime = Math.max(0, (safeNumber(t) || 0) - 0.25); const p = audio.play(); if (p && p.catch) p.catch(() => {}); } };
+  }
+
+  function buildReadingOverlay(job, data, initialQ) {
+    const id = job.id;
+    const tidied = parseTidied(job);
+    const hasSeg = data && Array.isArray(data.segments) && data.segments.length > 0;
+
+    let rawNode;
+    if (data && hasSpeakers(data)) rawNode = buildDiarizedTranscript(data);
+    else if (hasSeg) rawNode = buildWordTranscript(data);
+    else { rawNode = el("div", { class: "transcript" }); rawNode.textContent = job.transcript_text || ""; }
+    const readableNode = tidied ? buildReadableTranscript(tidied) : null;
+    const segs = hasSeg ? data.segments : [];
+
+    const overlay = el("div", { class: "reading" });
+    const topbar = el("div", { class: "reading__bar" });
+    const back = el("button", { class: "reading__back", type: "button", "aria-label": "Back to list", title: "Back" });
+    back.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>';
+    back.addEventListener("click", () => { location.hash = "#/"; });
+
+    const titleWrap = el("div", { class: "reading__title" });
+    titleWrap.appendChild(el("div", { class: "reading__name", title: job.original_filename, text: job.original_filename || "(unnamed)" }));
+    const metaBits = [formatMsgTime(job), formatDuration(job.duration)].filter(Boolean).join("  ·  ");
+    if (metaBits) titleWrap.appendChild(el("div", { class: "reading__meta", text: metaBits }));
+
+    const search = el("div", { class: "reading__search" });
+    const sInput = el("input", { class: "reading__search-input", type: "search", placeholder: "Find…", "aria-label": "Find in transcript" });
+    const sCount = el("span", { class: "reading__search-count" });
+    const sPrev = el("button", { class: "reading__search-nav", type: "button", "aria-label": "Previous match", text: "‹" });
+    const sNext = el("button", { class: "reading__search-nav", type: "button", "aria-label": "Next match", text: "›" });
+    search.appendChild(sInput); search.appendChild(sCount); search.appendChild(sPrev); search.appendChild(sNext);
+
+    topbar.appendChild(back); topbar.appendChild(titleWrap); topbar.appendChild(search);
+
+    const body = el("div", { class: "reading__body" });
+    const content = el("div", { class: "reading__content" });
+    if (readableNode) {
+      const toggle = el("div", { class: "view-toggle" });
+      const rBtn = el("button", { class: "view-toggle__btn is-active", text: "Readable" });
+      const wBtn = el("button", { class: "view-toggle__btn", text: "Raw" });
+      const show = (readable) => {
+        readableNode.hidden = !readable; rawNode.hidden = readable;
+        rBtn.classList.toggle("is-active", readable); wBtn.classList.toggle("is-active", !readable);
+        reading.activeNode = readable ? readableNode : rawNode;
+        cacheReadingSpans();
+        if (sInput.value) runSearch(sInput.value);
+      };
+      rBtn.addEventListener("click", () => show(true));
+      wBtn.addEventListener("click", () => show(false));
+      toggle.appendChild(rBtn); toggle.appendChild(wBtn);
+      content.appendChild(toggle);
+      content.appendChild(readableNode);
+      content.appendChild(rawNode);
+      rawNode.hidden = true;
+    } else {
+      content.appendChild(rawNode);
+    }
+    body.appendChild(content);
+
+    const player = buildReadingPlayer(id, segs);
+
+    overlay.appendChild(topbar);
+    overlay.appendChild(body);
+    overlay.appendChild(player.bar);
+    document.body.appendChild(overlay);
+    document.body.classList.add("reading-open");
+
+    reading = {
+      id, overlay, audio: player.audio, segments: segs,
+      activeNode: readableNode || rawNode,
+      wordSpans: [], wordStarts: [], activeWordIdx: -1,
+      raf: null, hits: [], hitIdx: -1,
+      search: (q) => { sInput.value = q; runSearch(q); },
+    };
+
+    rawNode.addEventListener("click", (e) => {
+      const span = e.target.closest && e.target.closest(".word");
+      if (!span || !rawNode.contains(span)) return;
+      const st = safeNumber(span.dataset.start);
+      if (st != null) player.seek(st);
+    });
+
+    function cacheReadingSpans() {
+      const spans = Array.from(reading.activeNode.querySelectorAll(".word"));
+      const kept = [], starts = [];
+      for (const sp of spans) { const v = safeNumber(sp.dataset.start); if (v == null) continue; kept.push(sp); starts.push(v); }
+      reading.wordSpans = kept; reading.wordStarts = starts; reading.activeWordIdx = -1;
+    }
+
+    function clearMarks() {
+      content.querySelectorAll("mark.rd-hit").forEach((m) => { m.replaceWith(document.createTextNode(m.textContent)); });
+      content.normalize();
+    }
+    function runSearch(q) {
+      clearMarks();
+      reading.hits = []; reading.hitIdx = -1;
+      const query = (q || "").trim();
+      if (!query) { sCount.textContent = ""; return; }
+      const rx = new RegExp(escapeRegex(query), "gi");
+      const walker = document.createTreeWalker(reading.activeNode, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.nodeValue && n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+      });
+      const textNodes = []; while (walker.nextNode()) textNodes.push(walker.currentNode);
+      for (const tn of textNodes) {
+        const txt = tn.nodeValue; let m, last = 0, any = false; rx.lastIndex = 0;
+        const frag = document.createDocumentFragment();
+        while ((m = rx.exec(txt)) !== null) {
+          any = true;
+          if (m.index > last) frag.appendChild(document.createTextNode(txt.slice(last, m.index)));
+          const mk = el("mark", { class: "rd-hit", text: m[0] });
+          frag.appendChild(mk); reading.hits.push(mk);
+          last = m.index + m[0].length;
+          if (m[0].length === 0) rx.lastIndex++;
+        }
+        if (any) { if (last < txt.length) frag.appendChild(document.createTextNode(txt.slice(last))); tn.replaceWith(frag); }
+      }
+      sCount.textContent = reading.hits.length ? `0/${reading.hits.length}` : "no matches";
+      if (reading.hits.length) step(0);
+    }
+    function step(i) {
+      if (!reading.hits.length) return;
+      if (reading.hitIdx >= 0 && reading.hits[reading.hitIdx]) reading.hits[reading.hitIdx].classList.remove("is-current");
+      reading.hitIdx = (i + reading.hits.length) % reading.hits.length;
+      const cur = reading.hits[reading.hitIdx];
+      cur.classList.add("is-current");
+      cur.scrollIntoView({ block: "center", behavior: "smooth" });
+      sCount.textContent = `${reading.hitIdx + 1}/${reading.hits.length}`;
+    }
+    let sTimer = null;
+    sInput.addEventListener("input", () => { clearTimeout(sTimer); sTimer = setTimeout(() => runSearch(sInput.value), 160); });
+    sInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); step(reading.hitIdx + (e.shiftKey ? -1 : 1)); } });
+    sPrev.addEventListener("click", () => step(reading.hitIdx - 1));
+    sNext.addEventListener("click", () => step(reading.hitIdx + 1));
+
+    cacheReadingSpans();
+
+    function follow() {
+      if (reading && reading.audio && !reading.audio.paused) highlightReadingAt(reading.audio.currentTime);
+      if (reading) reading.raf = requestAnimationFrame(follow);
+    }
+    reading.raf = requestAnimationFrame(follow);
+
+    if (initialQ) reading.search(initialQ);
+  }
+
+  // ── Boot ─────────────────────────────────────────────────────────────
   function init() {
     wireUploader();
     wireNav();
+    window.addEventListener("hashchange", route);
     if (speakerFilter) {
       speakerFilter.addEventListener("change", () => {
         speakerFilterValue = speakerFilter.value;
@@ -1834,8 +2167,12 @@
       });
     }
     if (clearAllBtn) clearAllBtn.addEventListener("click", clearAllJobs);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && reading) location.hash = "#/";
+    });
     poll();
     setInterval(poll, POLL_MS);
+    route(); // honor an initial #/read/<id> or #/speakers deep link
     // Tidy up streams + audio on unload.
     window.addEventListener("beforeunload", () => {
       for (const id of ui.keys()) { stopStream(id); teardownAudio(id); }

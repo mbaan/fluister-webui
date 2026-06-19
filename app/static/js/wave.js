@@ -17,7 +17,7 @@ import { ACCENTS, DEFAULT_ACCENT, resolveMode } from "./palette.js";
 const canvas = document.getElementById("waveCanvas");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-const REST = 0.45;   // idle flow depth
+const REST = 0.65;   // idle flow depth (visible at rest)
 const ACTIVE = 1.0;  // flow depth while a job is transcribing
 
 let raf = null;
@@ -76,7 +76,7 @@ function draw() {
     const a = amp(x);
     const hue = hueAt(accent.stops, x);
     // Traveling crest: 0..1, peaks sweep from left to right as t grows.
-    const flow = 0.5 + 0.5 * Math.sin(x * Math.PI * 3 - t);
+    const flow = 0.5 + 0.5 * Math.sin(x * Math.PI * 2.4 - t);
     for (let r = 0; r < rows; r++) {
       const y = (r - rows / 2) * spacing + cy + spacing / 2;
       const ry = Math.abs((y - cy) / vSpan);
@@ -84,10 +84,10 @@ function draw() {
       let pres = (a - ry + 0.12) / 0.30;
       pres = Math.max(0, Math.min(1, pres));
       if (pres <= 0.02) continue;
-      const rad = maxR * pres * (0.86 + 0.20 * flow * intensity);
+      const rad = maxR * pres * (0.78 + 0.36 * flow * intensity);
       if (rad < 0.4) continue;
-      const light = baseL + presL * pres + 16 * intensity * flow;
-      const alpha = (0.26 + 0.70 * pres) * (1 - 0.30 * intensity * (1 - flow));
+      const light = baseL + presL * pres + 22 * intensity * flow;
+      const alpha = (0.22 + 0.74 * pres) * (1 - 0.52 * intensity * (1 - flow));
       ctx.fillStyle = `hsla(${hue.toFixed(0)}, 82%, ${light.toFixed(1)}%, ${alpha.toFixed(3)})`;
       ctx.beginPath();
       ctx.arc(cx, y, rad, 0, Math.PI * 2);
@@ -99,7 +99,7 @@ function draw() {
 function frame(ts) {
   if (!last) last = ts;
   if (ts - last >= 32) {              // ~30fps is plenty for a calm flow
-    t += 0.045 * (0.6 + 0.8 * intensity);
+    t += 0.05 * (0.7 + 0.6 * intensity);
     intensity += (target - intensity) * 0.06;
     last = ts;
     draw();

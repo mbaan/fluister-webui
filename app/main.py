@@ -386,7 +386,7 @@ async def rediarize(job_id: str, request: Request):
         # Clear the previous run's structured + readable transcripts too, so a
         # rerun that produces no tidy pass (LLM down) can't keep serving a stale
         # readable view mismatched with the freshly re-diarized segments.
-        segments_json=None, tidied_json=None,
+        segments_json=None, tidied_json=None, insights_json=None,
         started_at=None, finished_at=None,
     )
     await _queue(request).enqueue(job_id)

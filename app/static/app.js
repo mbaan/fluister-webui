@@ -1330,6 +1330,14 @@
       // The subsequent `done` event re-renders with the readable view.
     });
 
+    es.addEventListener("insights", (e) => {
+      const data = parseEvent(e);
+      if (!data || !data.insights) return;
+      const cur = jobs.get(id);
+      if (cur) cur.insights_json = JSON.stringify(data.insights);
+      // Surfaced in the reading view, which reads the job's insights_json.
+    });
+
     es.addEventListener("done", (e) => {
       const data = parseEvent(e);
       if (data && typeof data === "object" && data.id) {
@@ -2012,6 +2020,45 @@
     return { bar, audio, seek: (t) => { audio.currentTime = Math.max(0, (safeNumber(t) || 0) - 0.25); const p = audio.play(); if (p && p.catch) p.catch(() => {}); } };
   }
 
+  function parseInsights(job) {
+    if (!job || !job.insights_json) return null;
+    try {
+      const o = JSON.parse(job.insights_json);
+      const ok = o && (o.summary || (o.key_points && o.key_points.length) || (o.chapters && o.chapters.length));
+      return ok ? o : null;
+    } catch (e) { return null; }
+  }
+
+  // The "AI summary" panel: summary + key points + clickable chapters. Chapters
+  // seek the reading player (which scrolls the transcript via word-follow).
+  function buildInsightsPanel(ins, player) {
+    const panel = el("div", { class: "insights" });
+    const head = el("div", { class: "insights__head" });
+    head.appendChild(el("span", { class: "insights__badge", text: "AI summary" }));
+    head.appendChild(el("span", { class: "insights__note", text: "generated on-device" }));
+    panel.appendChild(head);
+    if (ins.summary) panel.appendChild(el("p", { class: "insights__summary", text: ins.summary }));
+    if (ins.key_points && ins.key_points.length) {
+      const ul = el("ul", { class: "insights__points" });
+      for (const kp of ins.key_points) ul.appendChild(el("li", { text: String(kp) }));
+      panel.appendChild(ul);
+    }
+    if (ins.chapters && ins.chapters.length) {
+      const wrap = el("div", { class: "insights__chapters" });
+      wrap.appendChild(el("div", { class: "insights__chapters-title", text: "Chapters" }));
+      for (const c of ins.chapters) {
+        const start = safeNumber(c.start);
+        const row = el("button", { class: "chapter", type: "button" });
+        row.appendChild(el("span", { class: "chapter__time", text: start != null ? formatClock(start) : "" }));
+        row.appendChild(el("span", { class: "chapter__title", text: String(c.title || "") }));
+        if (start != null) row.addEventListener("click", () => player.seek(start));
+        wrap.appendChild(row);
+      }
+      panel.appendChild(wrap);
+    }
+    return panel;
+  }
+
   function buildReadingOverlay(job, data, initialQ) {
     const id = job.id;
     const tidied = parseTidied(job);
@@ -2070,6 +2117,9 @@
     body.appendChild(content);
 
     const player = buildReadingPlayer(id, segs);
+
+    const ins = parseInsights(job);
+    if (ins) content.insertBefore(buildInsightsPanel(ins, player), content.firstChild);
 
     overlay.appendChild(topbar);
     overlay.appendChild(body);

@@ -19,6 +19,7 @@ from app import assign, audio, db
 from app.config import Settings
 from app.llm_server import LlamaServer
 from app.speakers import Gallery, build_hotwords
+from app.insights import generate_insights
 from app.tidier import group_turns, tidy_turns
 
 logger = logging.getLogger(__name__)
@@ -276,12 +277,23 @@ class JobQueue:
                     "detected_language": info.language,
                 })
                 tidied = await asyncio.to_thread(self._maybe_tidy, job_id, segments)
-                fields: dict[str, Any] = {"status": db.STATUS_DONE, "progress": 1.0}
                 if tidied is not None:
-                    fields["tidied_json"] = json.dumps(tidied, ensure_ascii=False)
-                db.update_job(db_path, job_id, **fields)
-                if tidied is not None:
+                    db.update_job(
+                        db_path, job_id,
+                        tidied_json=json.dumps(tidied, ensure_ascii=False),
+                    )
                     self.publish(job_id, "tidied", {"tidied": tidied})
+
+                # On-device insight pass (summary / key points / chapters). Also
+                # best-effort and additive — it never touches the transcript. The
+                # job stays TIDYING ("Polishing…") through this short window.
+                insights = await asyncio.to_thread(self._maybe_insights, job_id, segments)
+                fields: dict[str, Any] = {"status": db.STATUS_DONE, "progress": 1.0}
+                if insights is not None:
+                    fields["insights_json"] = json.dumps(insights, ensure_ascii=False)
+                db.update_job(db_path, job_id, **fields)
+                if insights is not None:
+                    self.publish(job_id, "insights", {"insights": insights})
 
             self.publish(job_id, "done", db.get_job(db_path, job_id))
 
@@ -320,6 +332,21 @@ class JobQueue:
             )
         except Exception:  # noqa: BLE001
             logger.exception("Tidy pass failed for job %s", job_id)
+            return None
+
+    def _maybe_insights(self, job_id: str, segments) -> dict | None:
+        """Best-effort summary / key points / chapters via the same llama-server.
+        Returns the insight dict or None (LLM down / error). Runs in a worker
+        thread; never raises into the pipeline."""
+        if not (self.llm_server is not None and self.llm_server.available):
+            return None
+        try:
+            return generate_insights(
+                segments, self.llm_server.base_url,
+                timeout=self.settings.llm_request_timeout,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Insight pass failed for job %s", job_id)
             return None
 
     def _diarize_and_identify(self, job_id, wav_path, segments, words):

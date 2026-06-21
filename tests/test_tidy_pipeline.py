@@ -42,7 +42,7 @@ def test_maybe_tidy_populates_when_available(tmp_path, monkeypatch):
     settings = load_settings()
     monkeypatch.setattr(
         qmod, "tidy_turns",
-        lambda turns, base_url, timeout, on_progress=None: [
+        lambda turns, base_url, timeout, language=None, on_progress=None: [
             {"speaker": t.speaker, "text": t.text.upper()} for t in turns
         ],
     )
@@ -84,7 +84,7 @@ def test_maybe_tidy_reports_progress(tmp_path, monkeypatch):
         "language": "auto", "status": qdb.STATUS_TIDYING, "model_name": "m",
     })
 
-    def fake_tidy(turns, base_url, timeout, on_progress=None):
+    def fake_tidy(turns, base_url, timeout, language=None, on_progress=None):
         out = []
         for i, t in enumerate(turns, start=1):
             out.append({"speaker": t.speaker, "text": t.text})
@@ -159,7 +159,7 @@ async def test_process_surfaces_tidy_phase(tmp_path, monkeypatch):
 
     status_mid_tidy = []
 
-    def fake_tidy(turns, base_url, timeout, on_progress=None):
+    def fake_tidy(turns, base_url, timeout, language=None, on_progress=None):
         status_mid_tidy.append(qdb.get_job(settings.db_path, "job1")["status"])
         out = []
         for i, t in enumerate(turns, start=1):

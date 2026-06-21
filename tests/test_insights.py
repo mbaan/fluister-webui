@@ -35,6 +35,25 @@ def test_extract_json_plain_and_fenced():
     assert insights._extract_json("not json at all") is None
 
 
+def test_build_insight_system_localises_then_anchors_then_default():
+    assert insights.build_insight_system("nl") == insights.INSIGHT_SYSTEM_NL
+    de = insights.build_insight_system("de")
+    assert de.startswith(insights.INSIGHT_SYSTEM)
+    assert "German" in de
+    assert insights.build_insight_system(None) == insights.INSIGHT_SYSTEM
+    assert insights.build_insight_system("auto") == insights.INSIGHT_SYSTEM
+
+
+def test_generate_insights_prompts_in_detected_language(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        insights, "chat_completion",
+        lambda base_url, messages, **k: captured.append(messages) or '{"summary": "ok"}',
+    )
+    insights.generate_insights(_segs(), "http://x", language="nl")
+    assert captured[0][0]["content"] == insights.INSIGHT_SYSTEM_NL
+
+
 def test_generate_insights_happy_path(monkeypatch):
     reply = (
         '{"summary": "A short planning call.",'

@@ -1,6 +1,14 @@
 import app.tidier as tidier_mod
 from app.models import Segment
-from app.tidier import SYSTEM_PROMPT, Turn, group_turns, tidy_turns
+from app.tidier import (
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_NL,
+    Turn,
+    build_system_prompt,
+    group_turns,
+    language_name,
+    tidy_turns,
+)
 
 
 def _seg(text, speaker=None):
@@ -50,6 +58,36 @@ def test_tidy_turns_builds_prompt_and_parses(monkeypatch):
     assert captured[0][1][0] == {"role": "system", "content": SYSTEM_PROMPT}
     assert captured[0][1][1]["content"] == "um hello"
     assert captured[0][3] == 42  # request timeout threaded through
+
+
+def test_language_name_maps_codes_or_passes_through():
+    assert language_name("nl") == "Dutch"
+    assert language_name("NL-be") == "Dutch"
+    assert language_name("xx") == "xx"  # unknown but non-empty: name it anyway
+    assert language_name(None) is None
+    assert language_name("auto") is None
+
+
+def test_build_system_prompt_picks_localised_then_anchors_then_default():
+    # A language we have a native prompt for is addressed in that language.
+    assert build_system_prompt("nl") == SYSTEM_PROMPT_NL
+    # A language we don't translate falls back to English + an explicit anchor.
+    de = build_system_prompt("de")
+    assert de.startswith(SYSTEM_PROMPT)
+    assert "German" in de
+    # No detected language → the plain English prompt.
+    assert build_system_prompt(None) == SYSTEM_PROMPT
+    assert build_system_prompt("auto") == SYSTEM_PROMPT
+
+
+def test_tidy_turns_prompts_in_detected_language(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        tidier_mod, "chat_completion",
+        lambda base_url, messages, **k: captured.append(messages) or "ok",
+    )
+    tidy_turns([Turn(None, "hallo daar")], "http://x:8080", language="nl")
+    assert captured[0][0] == {"role": "system", "content": SYSTEM_PROMPT_NL}
 
 
 def test_tidy_turns_falls_back_to_raw_on_error(monkeypatch):

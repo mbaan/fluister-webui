@@ -276,7 +276,9 @@ class JobQueue:
                     "status": db.STATUS_TIDYING, "progress": 0.0,
                     "detected_language": info.language,
                 })
-                tidied = await asyncio.to_thread(self._maybe_tidy, job_id, segments)
+                tidied = await asyncio.to_thread(
+                    self._maybe_tidy, job_id, segments, info.language
+                )
                 if tidied is not None:
                     db.update_job(
                         db_path, job_id,
@@ -287,7 +289,9 @@ class JobQueue:
                 # On-device insight pass (summary / key points / chapters). Also
                 # best-effort and additive — it never touches the transcript. The
                 # job stays TIDYING ("Polishing…") through this short window.
-                insights = await asyncio.to_thread(self._maybe_insights, job_id, segments)
+                insights = await asyncio.to_thread(
+                    self._maybe_insights, job_id, segments, info.language
+                )
                 fields: dict[str, Any] = {"status": db.STATUS_DONE, "progress": 1.0}
                 if insights is not None:
                     fields["insights_json"] = json.dumps(insights, ensure_ascii=False)
@@ -305,10 +309,11 @@ class JobQueue:
             )
             self.publish(job_id, "error", {"message": str(exc)})
 
-    def _maybe_tidy(self, job_id: str, segments) -> list[dict] | None:
+    def _maybe_tidy(self, job_id: str, segments, language: str | None = None) -> list[dict] | None:
         """Best-effort readable tidy. Returns paragraphs or None (LLM down / error).
         Runs in a worker thread; per-turn progress goes to SSE subscribers and to
-        the DB row (for polling clients)."""
+        the DB row (for polling clients). ``language`` keeps the tidy output in
+        the transcript's own language instead of translating it."""
         if not (self.llm_server is not None and self.llm_server.available):
             return None
         try:
@@ -328,22 +333,25 @@ class JobQueue:
             return tidy_turns(
                 turns, self.llm_server.base_url,
                 timeout=self.settings.llm_request_timeout,
+                language=language,
                 on_progress=on_progress,
             )
         except Exception:  # noqa: BLE001
             logger.exception("Tidy pass failed for job %s", job_id)
             return None
 
-    def _maybe_insights(self, job_id: str, segments) -> dict | None:
+    def _maybe_insights(self, job_id: str, segments, language: str | None = None) -> dict | None:
         """Best-effort summary / key points / chapters via the same llama-server.
         Returns the insight dict or None (LLM down / error). Runs in a worker
-        thread; never raises into the pipeline."""
+        thread; never raises into the pipeline. ``language`` keeps the overview in
+        the transcript's own language instead of translating it."""
         if not (self.llm_server is not None and self.llm_server.available):
             return None
         try:
             return generate_insights(
                 segments, self.llm_server.base_url,
                 timeout=self.settings.llm_request_timeout,
+                language=language,
             )
         except Exception:  # noqa: BLE001
             logger.exception("Insight pass failed for job %s", job_id)

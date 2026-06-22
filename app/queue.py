@@ -55,6 +55,7 @@ class JobQueue:
             compute_type=s.compute_type,
             batch_size=s.batch_size,
             use_vad=s.use_vad,
+            vad_min_coverage=s.vad_min_coverage,
         )
 
     def _default_llm_server(self) -> Any:

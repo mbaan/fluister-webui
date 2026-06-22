@@ -10,12 +10,14 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import types
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from app.transcriber import resolve_compute_type, resolve_device
+from app.models import Segment
+from app.transcriber import Transcriber, resolve_compute_type, resolve_device
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,82 @@ class TestResolveComputeType:
 
     def test_explicit_passthrough_on_cpu(self):
         assert resolve_compute_type("float32", "cpu") == "float32"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests – VAD over-filter retry
+#
+# When VAD is on and the transcript covers only a tiny fraction of the audio,
+# the recording is most likely noisy speech that Silero VAD wrongly discarded;
+# the transcriber should retry once with VAD off. These tests stub the
+# per-pass helper ``_transcribe_once`` so no model is loaded.
+# ---------------------------------------------------------------------------
+
+
+def _bare_transcriber(use_vad: bool = True, vad_min_coverage: float = 0.5) -> Transcriber:
+    """A Transcriber instance with the retry knobs set but no model loaded."""
+    t = Transcriber.__new__(Transcriber)
+    t.use_vad = use_vad
+    t.batch_size = 8
+    t.vad_min_coverage = vad_min_coverage
+    return t
+
+
+def _info(language: str = "en", duration: float = 200.0):
+    return types.SimpleNamespace(language=language, duration=duration)
+
+
+class TestVadCoverageRetry:
+    def _stub(self, t: Transcriber, results: dict):
+        """Make ``_transcribe_once`` return results[use_vad] and record calls."""
+        calls: list[bool] = []
+
+        def fake_once(wav_path, lang, duration, on_segment, hotwords, use_vad):
+            calls.append(use_vad)
+            return results[use_vad]
+
+        t._transcribe_once = fake_once
+        return calls
+
+    def test_low_coverage_retries_without_vad(self):
+        t = _bare_transcriber()
+        vad = ([Segment(0.0, 2.0, "they're being hello")], [], _info(duration=200.0))
+        novad = ([Segment(0.0, 198.0, "full transcript")], [], _info(duration=200.0))
+        calls = self._stub(t, {True: vad, False: novad})
+
+        segs, _words, info = t.transcribe("x.wav", duration=200.0)
+
+        assert calls == [True, False]  # retried with VAD off
+        assert segs[0].end == 198.0  # returned the no-VAD result
+        assert info.duration == 200.0
+
+    def test_good_coverage_does_not_retry(self):
+        t = _bare_transcriber()
+        good = ([Segment(0.0, 196.0, "full")], [], _info(duration=200.0))
+        calls = self._stub(t, {True: good})
+
+        segs, _words, _inf = t.transcribe("x.wav", duration=200.0)
+
+        assert calls == [True]  # no retry
+        assert segs[0].end == 196.0
+
+    def test_short_file_does_not_retry(self):
+        t = _bare_transcriber()
+        short = ([Segment(0.0, 0.5, "hi")], [], _info(duration=5.0))
+        calls = self._stub(t, {True: short})
+
+        t.transcribe("x.wav", duration=5.0)
+
+        assert calls == [True]  # too short to bother retrying
+
+    def test_vad_already_off_never_retries(self):
+        t = _bare_transcriber(use_vad=False)
+        res = ([Segment(0.0, 2.0, "hi")], [], _info(duration=200.0))
+        calls = self._stub(t, {False: res})
+
+        t.transcribe("x.wav", duration=200.0)
+
+        assert calls == [False]  # no VAD pass to retry around
 
 
 # ---------------------------------------------------------------------------

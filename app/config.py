@@ -58,6 +58,7 @@ class Settings:
     compute_type: str  # "auto" | "float16" | "int8" | "int8_float16"
     batch_size: int
     use_vad: bool
+    vad_min_coverage: float  # retry without VAD below this transcript/audio coverage
     default_language: str  # "auto" | "nl" | "en"
     max_upload_mb: int
     # Diarization / speaker recognition
@@ -91,6 +92,7 @@ def load_settings() -> Settings:
         compute_type=os.environ.get("TRANSCRIBE_COMPUTE_TYPE", "auto"),
         batch_size=int(os.environ.get("TRANSCRIBE_BATCH_SIZE", "2")),
         use_vad=_env_bool("TRANSCRIBE_VAD", True),
+        vad_min_coverage=float(os.environ.get("TRANSCRIBE_VAD_MIN_COVERAGE", "0.5")),
         default_language=os.environ.get("TRANSCRIBE_LANGUAGE", "auto"),
         max_upload_mb=int(os.environ.get("TRANSCRIBE_MAX_UPLOAD_MB", "2048")),
         diarize=_env_bool("TRANSCRIBE_DIARIZE", True),
